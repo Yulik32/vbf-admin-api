@@ -1,0 +1,5 @@
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhZG1pbkBleGFtcGxlLmNvbSIsImV4cCI6MTc3OTUyNjQxM30.1Ots6tpUNpCjnRY45Vk1Yq-V3sbTvYTKp5SlXBPzPwU
+
+
+venv\Scripts\activate
+uvicorn main:app --reload
