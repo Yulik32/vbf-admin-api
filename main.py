@@ -14,10 +14,15 @@ app = FastAPI(
     version="1.0.0"
 )
 
-# CORS для React
+# CORS для React — ДОБАВЛЯЕМ ДОМЕН BEGET
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:5173"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://filatoah.beget.tech",      # 👈 ДОБАВИТЬ ЭТО
+        "https://filatoah.beget.tech"      # 👈 И ЭТО (на всякий случай)
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -36,7 +41,6 @@ app.include_router(service.router)
 app.include_router(oxrana.router)
 app.include_router(license.router)
 app.include_router(catalog.router)
-
 
 # Создаём папку для загруженных файлов
 uploads_path = "uploads"
