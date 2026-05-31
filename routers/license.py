@@ -1,5 +1,6 @@
 import os
 import aiohttp
+import base64
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
@@ -11,28 +12,56 @@ from dependencies import get_current_user
 
 router = APIRouter(prefix="/license", tags=["license"])
 
-# ========== Функция загрузки на Catbox ==========
-async def upload_to_catbox(file: UploadFile) -> str:
+# ========== Функция загрузки на ImgBB ==========
+async def upload_to_imgbb(file: UploadFile) -> str:
     """
-    Загружает файл на catbox.moe и возвращает прямую ссылку
+    Загружает файл на imgbb.com и возвращает прямую ссылку
     """
-    CATBOX_API_URL = "https://catbox.moe/user/api.php"
+    # Берём API ключ из переменной окружения
+    IMGBB_API_KEY = os.getenv("IMGBB_API_KEY")
     
-    form_data = aiohttp.FormData()
-    form_data.add_field('reqtype', 'fileupload')
-    form_data.add_field('fileToUpload', file.file, filename=file.filename)
+    if not IMGBB_API_KEY:
+        raise HTTPException(
+            status_code=500,
+            detail="ImgBB API key not configured. Please add IMGBB_API_KEY to environment variables."
+        )
+    
+    IMGBB_API_URL = "https://api.imgbb.com/1/upload"
+    
+    # Читаем содержимое файла
+    content = await file.read()
+    
+    # Кодируем в base64 (ImgBB требует такой формат)
+    encoded_image = base64.b64encode(content).decode('utf-8')
+    
+    # Подготавливаем данные для отправки
+    data = {
+        'key': IMGBB_API_KEY,
+        'image': encoded_image,
+        'name': file.filename,
+        'expiration': 0  # 0 = бессрочное хранение
+    }
     
     async with aiohttp.ClientSession() as session:
-        async with session.post(CATBOX_API_URL, data=form_data) as response:
-            result = await response.text()
-            
-            if response.status == 200 and result.startswith('https://'):
-                return result.strip()
-            else:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"Catbox upload error: {result}"
-                )
+        try:
+            async with session.post(IMGBB_API_URL, data=data) as response:
+                result = await response.json()
+                
+                if result.get('success'):
+                    # Возвращаем прямую ссылку на изображение
+                    return result['data']['url']
+                else:
+                    # Если ошибка от ImgBB
+                    error_msg = result.get('error', {}).get('message', 'Unknown error')
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"ImgBB error: {error_msg}"
+                    )
+        except Exception as e:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Connection error: {str(e)}"
+            )
 
 # ========== Схемы для качества ==========
 class QualityCardCreate(BaseModel):
@@ -69,7 +98,7 @@ class LicenseContentUpdate(BaseModel):
     licenses_title_ru: Optional[str] = None
     licenses_title_en: Optional[str] = None
 
-# ========== Загрузка файлов (НОВАЯ ВЕРСИЯ - Catbox) ==========
+# ========== Загрузка файлов (через ImgBB) ==========
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
@@ -84,8 +113,8 @@ async def upload_file(
     if ext not in allowed:
         raise HTTPException(status_code=400, detail="Invalid file type")
     
-    # ЗАГРУЖАЕМ НА CATBOX (вместо локального сохранения)
-    file_url = await upload_to_catbox(file)
+    # Загружаем на ImgBB
+    file_url = await upload_to_imgbb(file)
     
     # Возвращаем ссылку
     return {"url": file_url}
