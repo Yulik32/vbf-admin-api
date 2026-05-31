@@ -1,5 +1,4 @@
 import os
-import aiohttp
 import base64
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
@@ -9,59 +8,78 @@ import models
 from pydantic import BaseModel
 from typing import Optional, List
 from dependencies import get_current_user
+from github import Github
+from github import GithubException
 
 router = APIRouter(prefix="/license", tags=["license"])
 
-# ========== Функция загрузки на ImgBB ==========
-async def upload_to_imgbb(file: UploadFile) -> str:
+# ========== Настройки GitHub ==========
+GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
+REPO_NAME = "Yulik32/vbf-admin-api"  # ВАШЕ ИМЯ РЕПОЗИТОРИЯ
+BRANCH = "main"
+UPLOAD_FOLDER = "uploads/license"
+
+# ========== Функция загрузки на GitHub ==========
+async def upload_to_github(file: UploadFile) -> str:
     """
-    Загружает файл на imgbb.com и возвращает прямую ссылку
+    Загружает файл в репозиторий GitHub и возвращает прямую ссылку
     """
-    # Берём API ключ из переменной окружения
-    IMGBB_API_KEY = os.getenv("IMGBB_API_KEY")
-    
-    if not IMGBB_API_KEY:
+    if not GITHUB_TOKEN:
         raise HTTPException(
             status_code=500,
-            detail="ImgBB API key not configured. Please add IMGBB_API_KEY to environment variables."
+            detail="GITHUB_TOKEN not configured. Please add it to environment variables."
         )
     
-    IMGBB_API_URL = "https://api.imgbb.com/1/upload"
-    
-    # Читаем содержимое файла
-    content = await file.read()
-    
-    # Кодируем в base64 (ImgBB требует такой формат)
-    encoded_image = base64.b64encode(content).decode('utf-8')
-    
-    # Подготавливаем данные для отправки
-    data = {
-        'key': IMGBB_API_KEY,
-        'image': encoded_image,
-        'name': file.filename,
-        'expiration': 0  # 0 = бессрочное хранение
-    }
-    
-    async with aiohttp.ClientSession() as session:
+    try:
+        # Подключаемся к GitHub
+        g = Github(GITHUB_TOKEN)
+        repo = g.get_repo(REPO_NAME)
+        
+        # Читаем содержимое файла
+        content = await file.read()
+        
+        # Генерируем уникальное имя файла
+        import uuid
+        file_extension = os.path.splitext(file.filename)[1].lower()
+        unique_filename = f"{uuid.uuid4()}{file_extension}"
+        
+        # Путь к файлу в репозитории
+        file_path = f"{UPLOAD_FOLDER}/{unique_filename}"
+        
+        # Кодируем содержимое в base64
+        encoded_content = base64.b64encode(content).decode('utf-8')
+        
+        # Загружаем файл в репозиторий
         try:
-            async with session.post(IMGBB_API_URL, data=data) as response:
-                result = await response.json()
-                
-                if result.get('success'):
-                    # Возвращаем прямую ссылку на изображение
-                    return result['data']['url']
-                else:
-                    # Если ошибка от ImgBB
-                    error_msg = result.get('error', {}).get('message', 'Unknown error')
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"ImgBB error: {error_msg}"
-                    )
-        except Exception as e:
-            raise HTTPException(
-                status_code=500,
-                detail=f"Connection error: {str(e)}"
+            # Проверяем, существует ли уже файл
+            existing_file = repo.get_contents(file_path, ref=BRANCH)
+            # Если существует, обновляем
+            repo.update_file(
+                path=file_path,
+                message=f"Update {unique_filename}",
+                content=encoded_content,
+                sha=existing_file.sha,
+                branch=BRANCH
             )
+        except GithubException:
+            # Если файла нет, создаём новый
+            repo.create_file(
+                path=file_path,
+                message=f"Upload {unique_filename}",
+                content=encoded_content,
+                branch=BRANCH
+            )
+        
+        # Формируем прямую ссылку на raw-файл
+        raw_url = f"https://raw.githubusercontent.com/{REPO_NAME}/{BRANCH}/{file_path}"
+        
+        return raw_url
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"github upload error: {str(e)}"
+        )
 
 # ========== Схемы для качества ==========
 class QualityCardCreate(BaseModel):
@@ -98,7 +116,7 @@ class LicenseContentUpdate(BaseModel):
     licenses_title_ru: Optional[str] = None
     licenses_title_en: Optional[str] = None
 
-# ========== Загрузка файлов (через ImgBB) ==========
+# ========== Загрузка файлов (через GitHub) ==========
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
@@ -113,10 +131,9 @@ async def upload_file(
     if ext not in allowed:
         raise HTTPException(status_code=400, detail="Invalid file type")
     
-    # Загружаем на ImgBB
-    file_url = await upload_to_imgbb(file)
+    # Загружаем на GitHub
+    file_url = await upload_to_github(file)
     
-    # Возвращаем ссылку
     return {"url": file_url}
 
 # ========== CRUD для карточек качества ==========
