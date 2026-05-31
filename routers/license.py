@@ -1,5 +1,5 @@
 import os
-import shutil
+import aiohttp
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
@@ -11,8 +11,28 @@ from dependencies import get_current_user
 
 router = APIRouter(prefix="/license", tags=["license"])
 
-UPLOAD_DIR = "uploads/license"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# ========== Функция загрузки на Catbox ==========
+async def upload_to_catbox(file: UploadFile) -> str:
+    """
+    Загружает файл на catbox.moe и возвращает прямую ссылку
+    """
+    CATBOX_API_URL = "https://catbox.moe/user/api.php"
+    
+    form_data = aiohttp.FormData()
+    form_data.add_field('reqtype', 'fileupload')
+    form_data.add_field('fileToUpload', file.file, filename=file.filename)
+    
+    async with aiohttp.ClientSession() as session:
+        async with session.post(CATBOX_API_URL, data=form_data) as response:
+            result = await response.text()
+            
+            if response.status == 200 and result.startswith('https://'):
+                return result.strip()
+            else:
+                raise HTTPException(
+                    status_code=500,
+                    detail=f"Catbox upload error: {result}"
+                )
 
 # ========== Схемы для качества ==========
 class QualityCardCreate(BaseModel):
@@ -49,7 +69,7 @@ class LicenseContentUpdate(BaseModel):
     licenses_title_ru: Optional[str] = None
     licenses_title_en: Optional[str] = None
 
-# ========== Загрузка файлов ==========
+# ========== Загрузка файлов (НОВАЯ ВЕРСИЯ - Catbox) ==========
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
@@ -64,14 +84,11 @@ async def upload_file(
     if ext not in allowed:
         raise HTTPException(status_code=400, detail="Invalid file type")
     
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_{file.filename}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
+    # ЗАГРУЖАЕМ НА CATBOX (вместо локального сохранения)
+    file_url = await upload_to_catbox(file)
     
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
-    return {"url": f"/uploads/license/{filename}"}
+    # Возвращаем ссылку
+    return {"url": file_url}
 
 # ========== CRUD для карточек качества ==========
 @router.get("/quality")
@@ -204,14 +221,12 @@ def get_license_content(
         "link_description_en": content.link_description_en,
         "image_1_url": content.image_1_url,
         "image_2_url": content.image_2_url,
-        # 👇 ДОБАВЬ ЭТИ ПОЛЯ
         "quality_title": content.quality_title_ru if lang == "ru" else content.quality_title_en,
         "quality_title_ru": content.quality_title_ru,
         "quality_title_en": content.quality_title_en,
         "licenses_title": content.licenses_title_ru if lang == "ru" else content.licenses_title_en,
         "licenses_title_ru": content.licenses_title_ru,
         "licenses_title_en": content.licenses_title_en
-        # 👆
     }
 
 @router.put("/content")
