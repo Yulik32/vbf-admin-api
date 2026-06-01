@@ -69,25 +69,15 @@ async def upload_file(
     if ext not in allowed:
         raise HTTPException(status_code=400, detail="Invalid file type")
     
-    # Проверка настроек
     if not CLOUD_NAME or not API_KEY or not API_SECRET:
-        raise HTTPException(
-            status_code=500,
-            detail="Cloudinary not configured"
-        )
+        raise HTTPException(status_code=500, detail="Cloudinary not configured")
     
     try:
-        # Читаем файл
         content = await file.read()
-        
-        # Кодируем в base64 (облачный метод без сложной подписи)
         import base64
         b64_content = base64.b64encode(content).decode()
-        
-        # Формируем data URL
         data_url = f"data:{file.content_type};base64,{b64_content}"
         
-        # Простой запрос к Cloudinary (без ручной подписи)
         upload_url = f"https://api.cloudinary.com/v1_1/{CLOUD_NAME}/auto/upload"
         
         async with aiohttp.ClientSession() as session:
@@ -97,29 +87,22 @@ async def upload_file(
                     "file": data_url,
                     "api_key": API_KEY,
                     "timestamp": str(int(time.time())),
+                    "upload_preset": "vbf_unsigned",  # <--- ДОБАВИТЬ ЭТУ СТРОКУ
                     "folder": "vbf_licenses"
                 }
             ) as response:
                 result = await response.json()
-                
-                # Логируем ответ для отладки
                 print(f"Cloudinary response: {result}")
                 
                 if response.status == 200 and result.get("secure_url"):
                     return {"url": result["secure_url"]}
                 else:
                     error_msg = result.get("error", {}).get("message", str(result))
-                    raise HTTPException(
-                        status_code=500,
-                        detail=f"Cloudinary error: {error_msg}"
-                    )
+                    raise HTTPException(500, detail=f"Cloudinary error: {error_msg}")
                     
     except Exception as e:
         print(f"Upload exception: {str(e)}")
-        raise HTTPException(
-            status_code=500,
-            detail=f"Upload error: {str(e)}"
-        )
+        raise HTTPException(500, detail=f"Upload error: {str(e)}")
                     
 
 # ========== CRUD для карточек качества ==========
