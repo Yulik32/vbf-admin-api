@@ -54,7 +54,6 @@ class LicenseContentUpdate(BaseModel):
     licenses_title_ru: Optional[str] = None
     licenses_title_en: Optional[str] = None
 
-# ========== Загрузка файлов (Cloudinary) ==========
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
@@ -70,63 +69,58 @@ async def upload_file(
     if ext not in allowed:
         raise HTTPException(status_code=400, detail="Invalid file type")
     
-    # Проверка настроек Cloudinary
+    # Проверка настроек
     if not CLOUD_NAME or not API_KEY or not API_SECRET:
         raise HTTPException(
             status_code=500,
-            detail="Cloudinary not configured. Please add CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET to environment variables."
+            detail="Cloudinary not configured"
         )
     
     try:
-        # Читаем содержимое файла
-        file_content = await file.read()
+        # Читаем файл
+        content = await file.read()
         
-        # Формируем уникальное имя файла
-        unique_filename = f"{uuid.uuid4()}{ext}"
-        folder = "vbf_licenses"
+        # Кодируем в base64 (облачный метод без сложной подписи)
+        import base64
+        b64_content = base64.b64encode(content).decode()
         
-        # Формируем подпись для Cloudinary API
-        timestamp = int(time.time())
-        signature_string = f"folder={folder}&public_id={folder}/{unique_filename.replace(ext, '')}&timestamp={timestamp}{API_SECRET}"
-        signature = hashlib.sha1(signature_string.encode()).hexdigest()
+        # Формируем data URL
+        data_url = f"data:{file.content_type};base64,{b64_content}"
         
-        # Готовим запрос к Cloudinary
-        cloudinary_url = f"https://api.cloudinary.com/v1_1/{CLOUD_NAME}/auto/upload"
+        # Простой запрос к Cloudinary (без ручной подписи)
+        upload_url = f"https://api.cloudinary.com/v1_1/{CLOUD_NAME}/auto/upload"
         
-        # Формируем данные для отправки
-        form_data = aiohttp.FormData()
-        form_data.add_field('file', file_content, filename=unique_filename)
-        form_data.add_field('api_key', API_KEY)
-        form_data.add_field('timestamp', str(timestamp))
-        form_data.add_field('signature', signature)
-        form_data.add_field('folder', folder)
-        form_data.add_field('public_id', f"{folder}/{unique_filename.replace(ext, '')}")
-        
-        # Отправляем запрос
         async with aiohttp.ClientSession() as session:
-            async with session.post(cloudinary_url, data=form_data) as response:
+            async with session.post(
+                upload_url,
+                data={
+                    "file": data_url,
+                    "api_key": API_KEY,
+                    "timestamp": str(int(time.time())),
+                    "folder": "vbf_licenses"
+                }
+            ) as response:
                 result = await response.json()
                 
-                if response.status == 200 and 'secure_url' in result:
-                    file_url = result['secure_url']
-                    return {"url": file_url}
+                # Логируем ответ для отладки
+                print(f"Cloudinary response: {result}")
+                
+                if response.status == 200 and result.get("secure_url"):
+                    return {"url": result["secure_url"]}
                 else:
-                    error_msg = result.get('error', {}).get('message', 'Unknown error')
+                    error_msg = result.get("error", {}).get("message", str(result))
                     raise HTTPException(
                         status_code=500,
                         detail=f"Cloudinary error: {error_msg}"
                     )
                     
-    except aiohttp.ClientError as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Network error: {str(e)}"
-        )
     except Exception as e:
+        print(f"Upload exception: {str(e)}")
         raise HTTPException(
             status_code=500,
             detail=f"Upload error: {str(e)}"
         )
+                    
 
 # ========== CRUD для карточек качества ==========
 @router.get("/quality")
