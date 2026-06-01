@@ -1,8 +1,7 @@
 import os
-import hashlib
-import time
-import uuid
 import aiohttp
+import base64
+import uuid
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
@@ -14,10 +13,9 @@ from dependencies import get_current_user
 
 router = APIRouter(prefix="/license", tags=["license"])
 
-# ========== Настройки Cloudinary ==========
-CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
-API_KEY = os.getenv("CLOUDINARY_API_KEY")
-API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
+# ========== Настройки FreeImage.host ==========
+# Бесплатный API ключ (замените на свой после регистрации)
+FREEIMAGE_API_KEY = os.getenv("FREEIMAGE_API_KEY")
 
 # ========== Схемы для качества ==========
 class QualityCardCreate(BaseModel):
@@ -54,6 +52,7 @@ class LicenseContentUpdate(BaseModel):
     licenses_title_ru: Optional[str] = None
     licenses_title_en: Optional[str] = None
 
+# ========== Загрузка файлов (FreeImage.host) ==========
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
@@ -69,40 +68,38 @@ async def upload_file(
     if ext not in allowed:
         raise HTTPException(status_code=400, detail="Invalid file type")
     
-    if not CLOUD_NAME or not API_KEY or not API_SECRET:
-        raise HTTPException(status_code=500, detail="Cloudinary not configured")
-    
     try:
+        # Читаем файл
         content = await file.read()
-        import base64
+        
+        # Кодируем в base64
         b64_content = base64.b64encode(content).decode()
-        data_url = f"data:{file.content_type};base64,{b64_content}"
         
-        upload_url = f"https://api.cloudinary.com/v1_1/{CLOUD_NAME}/auto/upload"
-        
+        # Отправляем в FreeImage.host
         async with aiohttp.ClientSession() as session:
             async with session.post(
-                upload_url,
+                "https://freeimage.host/api/1/upload",
                 data={
-                    "file": data_url,
-                    "api_key": API_KEY,
-                    "timestamp": str(int(time.time())),
-                    "upload_preset": "vbf_unsigned"  # папка берётся из пресета
+                    "key": FREEIMAGE_API_KEY,
+                    "action": "upload",
+                    "source": b64_content,
+                    "format": "json"
                 }
             ) as response:
                 result = await response.json()
-                print(f"Cloudinary response: {result}")
                 
-                if response.status == 200 and result.get("secure_url"):
-                    return {"url": result["secure_url"]}
+                print(f"FreeImage response: {result}")
+                
+                if response.status == 200 and result.get("success"):
+                    image_url = result["image"]["url"]
+                    return {"url": image_url}
                 else:
                     error_msg = result.get("error", {}).get("message", str(result))
-                    raise HTTPException(500, detail=f"Cloudinary error: {error_msg}")
+                    raise HTTPException(500, detail=f"FreeImage error: {error_msg}")
                     
     except Exception as e:
         print(f"Upload exception: {str(e)}")
         raise HTTPException(500, detail=f"Upload error: {str(e)}")
-                    
 
 # ========== CRUD для карточек качества ==========
 @router.get("/quality")
