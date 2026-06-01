@@ -87,8 +87,7 @@ async def upload_file(
                     "file": data_url,
                     "api_key": API_KEY,
                     "timestamp": str(int(time.time())),
-                    "upload_preset": "vbf_unsigned",  # <--- ДОБАВИТЬ ЭТУ СТРОКУ
-                    "folder": "vbf_licenses"
+                    "upload_preset": "vbf_unsigned"  # папка берётся из пресета
                 }
             ) as response:
                 result = await response.json()
