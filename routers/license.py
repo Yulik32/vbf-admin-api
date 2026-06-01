@@ -1,7 +1,7 @@
 import os
-import aiohttp
-import base64
+import boto3
 import uuid
+from botocore.exceptions import ClientError
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
@@ -13,9 +13,11 @@ from dependencies import get_current_user
 
 router = APIRouter(prefix="/license", tags=["license"])
 
-# ========== Настройки FreeImage.host ==========
-# Бесплатный API ключ (замените на свой после регистрации)
-FREEIMAGE_API_KEY = os.getenv("FREEIMAGE_API_KEY")
+# ========== Настройки Yandex Cloud Object Storage ==========
+YC_ACCESS_KEY = os.getenv("YC_ACCESS_KEY")
+YC_SECRET_KEY = os.getenv("YC_SECRET_KEY")
+YC_BUCKET = os.getenv("YC_BUCKET")
+YC_ENDPOINT = "https://storage.yandexcloud.net"
 
 # ========== Схемы для качества ==========
 class QualityCardCreate(BaseModel):
@@ -52,7 +54,7 @@ class LicenseContentUpdate(BaseModel):
     licenses_title_ru: Optional[str] = None
     licenses_title_en: Optional[str] = None
 
-# ========== Загрузка файлов (FreeImage.host) ==========
+# ========== Загрузка файлов (Yandex Cloud Object Storage) ==========
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
@@ -68,38 +70,60 @@ async def upload_file(
     if ext not in allowed:
         raise HTTPException(status_code=400, detail="Invalid file type")
     
+    # Проверка настроек
+    if not YC_ACCESS_KEY or not YC_SECRET_KEY or not YC_BUCKET:
+        raise HTTPException(
+            status_code=500,
+            detail="Yandex Cloud credentials not configured. Please add YC_ACCESS_KEY, YC_SECRET_KEY, YC_BUCKET to environment variables."
+        )
+    
     try:
+        # Создаём клиент для Yandex Object Storage (S3-совместимый)
+        session = boto3.session.Session()
+        s3 = session.client(
+            service_name='s3',
+            endpoint_url=YC_ENDPOINT,
+            aws_access_key_id=YC_ACCESS_KEY,
+            aws_secret_access_key=YC_SECRET_KEY,
+            region_name='ru-central1'
+        )
+        
+        # Генерируем уникальное имя файла
+        unique_filename = f"{uuid.uuid4()}{ext}"
+        folder = "license"
+        key = f"{folder}/{unique_filename}"
+        
         # Читаем файл
         content = await file.read()
         
-        # Кодируем в base64
-        b64_content = base64.b64encode(content).decode()
+        # Загружаем в бакет
+        s3.put_object(
+            Bucket=YC_BUCKET,
+            Key=key,
+            Body=content,
+            ContentType=file.content_type,
+            ACL='public-read'  # Делаем файл публичным
+        )
         
-        # Отправляем в FreeImage.host
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                "https://freeimage.host/api/1/upload",
-                data={
-                    "key": FREEIMAGE_API_KEY,
-                    "action": "upload",
-                    "source": b64_content,
-                    "format": "json"
-                }
-            ) as response:
-                result = await response.json()
-                
-                print(f"FreeImage response: {result}")
-                
-                if response.status == 200 and result.get("success"):
-                    image_url = result["image"]["url"]
-                    return {"url": image_url}
-                else:
-                    error_msg = result.get("error", {}).get("message", str(result))
-                    raise HTTPException(500, detail=f"FreeImage error: {error_msg}")
-                    
+        # Формируем публичную ссылку
+        public_url = f"https://storage.yandexcloud.net/{YC_BUCKET}/{key}"
+        
+        print(f"File uploaded to Yandex Cloud: {public_url}")
+        
+        return {"url": public_url}
+        
+    except ClientError as e:
+        print(f"Yandex Cloud upload error: {e}")
+        error_code = e.response.get('Error', {}).get('Code', 'Unknown')
+        if error_code == 'AccessDenied':
+            raise HTTPException(status_code=403, detail="Access denied to bucket. Check bucket permissions.")
+        elif error_code == 'NoSuchBucket':
+            raise HTTPException(status_code=404, detail=f"Bucket '{YC_BUCKET}' not found.")
+        else:
+            raise HTTPException(status_code=500, detail=f"Storage error: {error_code}")
     except Exception as e:
         print(f"Upload exception: {str(e)}")
-        raise HTTPException(500, detail=f"Upload error: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
 # ========== CRUD для карточек качества ==========
 @router.get("/quality")
