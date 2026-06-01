@@ -1,5 +1,8 @@
 import os
-import base64
+import hashlib
+import time
+import uuid
+import aiohttp
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
@@ -8,78 +11,13 @@ import models
 from pydantic import BaseModel
 from typing import Optional, List
 from dependencies import get_current_user
-from github import Github
-from github import GithubException
 
 router = APIRouter(prefix="/license", tags=["license"])
 
-# ========== Настройки GitHub ==========
-GITHUB_TOKEN = os.getenv("GITHUB_TOKEN")
-REPO_NAME = "Yulik32/vbf-admin-api"  # ВАШЕ ИМЯ РЕПОЗИТОРИЯ
-BRANCH = "main"
-UPLOAD_FOLDER = "uploads/license"
-
-# ========== Функция загрузки на GitHub ==========
-async def upload_to_github(file: UploadFile) -> str:
-    """
-    Загружает файл в репозиторий GitHub и возвращает прямую ссылку
-    """
-    if not GITHUB_TOKEN:
-        raise HTTPException(
-            status_code=500,
-            detail="GITHUB_TOKEN not configured. Please add it to environment variables."
-        )
-    
-    try:
-        # Подключаемся к GitHub
-        g = Github(GITHUB_TOKEN)
-        repo = g.get_repo(REPO_NAME)
-        
-        # Читаем содержимое файла
-        content = await file.read()
-        
-        # Генерируем уникальное имя файла
-        import uuid
-        file_extension = os.path.splitext(file.filename)[1].lower()
-        unique_filename = f"{uuid.uuid4()}{file_extension}"
-        
-        # Путь к файлу в репозитории
-        file_path = f"{UPLOAD_FOLDER}/{unique_filename}"
-        
-        # Кодируем содержимое в base64
-        encoded_content = base64.b64encode(content).decode('utf-8')
-        
-        # Загружаем файл в репозиторий
-        try:
-            # Проверяем, существует ли уже файл
-            existing_file = repo.get_contents(file_path, ref=BRANCH)
-            # Если существует, обновляем
-            repo.update_file(
-                path=file_path,
-                message=f"Update {unique_filename}",
-                content=encoded_content,
-                sha=existing_file.sha,
-                branch=BRANCH
-            )
-        except GithubException:
-            # Если файла нет, создаём новый
-            repo.create_file(
-                path=file_path,
-                message=f"Upload {unique_filename}",
-                content=encoded_content,
-                branch=BRANCH
-            )
-        
-        # Формируем прямую ссылку на raw-файл
-        raw_url = f"https://raw.githubusercontent.com/{REPO_NAME}/{BRANCH}/{file_path}"
-        
-        return raw_url
-        
-    except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"github upload error: {str(e)}"
-        )
+# ========== Настройки Cloudinary ==========
+CLOUD_NAME = os.getenv("CLOUDINARY_CLOUD_NAME")
+API_KEY = os.getenv("CLOUDINARY_API_KEY")
+API_SECRET = os.getenv("CLOUDINARY_API_SECRET")
 
 # ========== Схемы для качества ==========
 class QualityCardCreate(BaseModel):
@@ -116,7 +54,7 @@ class LicenseContentUpdate(BaseModel):
     licenses_title_ru: Optional[str] = None
     licenses_title_en: Optional[str] = None
 
-# ========== Загрузка файлов (через GitHub) ==========
+# ========== Загрузка файлов (Cloudinary) ==========
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
@@ -126,15 +64,69 @@ async def upload_file(
     if current_user.role != 'admin':
         raise HTTPException(status_code=403, detail="Admin rights required")
     
+    # Проверка типа файла
     allowed = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.pdf'}
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in allowed:
         raise HTTPException(status_code=400, detail="Invalid file type")
     
-    # Загружаем на GitHub
-    file_url = await upload_to_github(file)
+    # Проверка настроек Cloudinary
+    if not CLOUD_NAME or not API_KEY or not API_SECRET:
+        raise HTTPException(
+            status_code=500,
+            detail="Cloudinary not configured. Please add CLOUDINARY_CLOUD_NAME, CLOUDINARY_API_KEY, CLOUDINARY_API_SECRET to environment variables."
+        )
     
-    return {"url": file_url}
+    try:
+        # Читаем содержимое файла
+        file_content = await file.read()
+        
+        # Формируем уникальное имя файла
+        unique_filename = f"{uuid.uuid4()}{ext}"
+        folder = "vbf_licenses"
+        
+        # Формируем подпись для Cloudinary API
+        timestamp = int(time.time())
+        signature_string = f"folder={folder}&public_id={folder}/{unique_filename.replace(ext, '')}&timestamp={timestamp}{API_SECRET}"
+        signature = hashlib.sha1(signature_string.encode()).hexdigest()
+        
+        # Готовим запрос к Cloudinary
+        cloudinary_url = f"https://api.cloudinary.com/v1_1/{CLOUD_NAME}/auto/upload"
+        
+        # Формируем данные для отправки
+        form_data = aiohttp.FormData()
+        form_data.add_field('file', file_content, filename=unique_filename)
+        form_data.add_field('api_key', API_KEY)
+        form_data.add_field('timestamp', str(timestamp))
+        form_data.add_field('signature', signature)
+        form_data.add_field('folder', folder)
+        form_data.add_field('public_id', f"{folder}/{unique_filename.replace(ext, '')}")
+        
+        # Отправляем запрос
+        async with aiohttp.ClientSession() as session:
+            async with session.post(cloudinary_url, data=form_data) as response:
+                result = await response.json()
+                
+                if response.status == 200 and 'secure_url' in result:
+                    file_url = result['secure_url']
+                    return {"url": file_url}
+                else:
+                    error_msg = result.get('error', {}).get('message', 'Unknown error')
+                    raise HTTPException(
+                        status_code=500,
+                        detail=f"Cloudinary error: {error_msg}"
+                    )
+                    
+    except aiohttp.ClientError as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Network error: {str(e)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Upload error: {str(e)}"
+        )
 
 # ========== CRUD для карточек качества ==========
 @router.get("/quality")
