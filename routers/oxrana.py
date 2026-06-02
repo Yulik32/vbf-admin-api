@@ -1,5 +1,7 @@
 import os
-import shutil
+import boto3
+import uuid
+from botocore.exceptions import ClientError
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
@@ -11,8 +13,11 @@ from dependencies import get_current_user
 
 router = APIRouter(prefix="/oxrana", tags=["oxrana"])
 
-UPLOAD_DIR = "uploads/docs"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# ========== Настройки Yandex Cloud Object Storage ==========
+YC_ACCESS_KEY = os.getenv("YC_ACCESS_KEY")
+YC_SECRET_KEY = os.getenv("YC_SECRET_KEY")
+YC_BUCKET = os.getenv("YC_BUCKET")
+YC_ENDPOINT = "https://storage.yandexcloud.net"
 
 # Схемы
 class OxranaDocumentCreate(BaseModel):
@@ -29,6 +34,72 @@ class OxranaDocumentUpdate(BaseModel):
     file_name: Optional[str] = None
     order: Optional[int] = None
     is_active: Optional[bool] = None
+
+# ========== Загрузка PDF в облако ==========
+@router.post("/upload")
+async def upload_pdf(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(get_current_user)
+):
+    if current_user.role != 'admin':
+        raise HTTPException(status_code=403, detail="Admin rights required")
+    
+    # Проверка расширения
+    if not file.filename.endswith('.pdf'):
+        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
+    
+    if not YC_ACCESS_KEY or not YC_SECRET_KEY or not YC_BUCKET:
+        raise HTTPException(
+            status_code=500,
+            detail="Yandex Cloud credentials not configured"
+        )
+    
+    try:
+        # Создаём клиент для Yandex Object Storage
+        session = boto3.session.Session()
+        s3 = session.client(
+            service_name='s3',
+            endpoint_url=YC_ENDPOINT,
+            aws_access_key_id=YC_ACCESS_KEY,
+            aws_secret_access_key=YC_SECRET_KEY,
+            region_name='ru-central1'
+        )
+        
+        # Генерируем уникальное имя файла
+        unique_filename = f"{uuid.uuid4()}.pdf"
+        folder = "docs"
+        key = f"{folder}/{unique_filename}"
+        
+        # Читаем файл
+        content = await file.read()
+        
+        # Загружаем в бакет
+        s3.put_object(
+            Bucket=YC_BUCKET,
+            Key=key,
+            Body=content,
+            ContentType='application/pdf',
+            ACL='public-read'
+        )
+        
+        # Формируем публичную ссылку
+        public_url = f"https://storage.yandexcloud.net/{YC_BUCKET}/{key}"
+        
+        return {
+            "file_path": public_url,
+            "file_name": file.filename,
+            "file_size": len(content)
+        }
+        
+    except ClientError as e:
+        print(f"Yandex Cloud upload error: {e}")
+        raise HTTPException(status_code=500, detail=f"Storage error: {e}")
+    except Exception as e:
+        print(f"Upload exception: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
+
+# ========== Остальные эндпоинты ==========
 
 # Получить все документы
 @router.get("/documents")
@@ -52,37 +123,6 @@ def get_documents(
             "order": doc.order
         })
     return result
-
-# Загрузить PDF файл
-@router.post("/upload")
-async def upload_pdf(
-    file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
-    # Проверка расширения
-    if not file.filename.endswith('.pdf'):
-        raise HTTPException(status_code=400, detail="Only PDF files are allowed")
-    
-    # Генерируем уникальное имя
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_{file.filename}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
-    
-    # Сохраняем файл
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
-    file_size = os.path.getsize(file_path)
-    
-    return {
-        "file_path": f"/uploads/docs/{filename}",
-        "file_name": file.filename,
-        "file_size": file_size
-    }
 
 # Создать документ
 @router.post("/documents")
@@ -143,12 +183,6 @@ def delete_document(
     db_doc = db.query(models.OxranaDocument).filter(models.OxranaDocument.id == doc_id).first()
     if not db_doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    
-    # Удаляем файл с диска
-    if db_doc.file_path:
-        file_path = db_doc.file_path.lstrip('/')
-        if os.path.exists(file_path):
-            os.remove(file_path)
     
     db.delete(db_doc)
     db.commit()
