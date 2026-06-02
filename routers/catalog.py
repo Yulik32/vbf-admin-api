@@ -1,5 +1,7 @@
 import os
-import shutil
+import boto3
+import uuid
+from botocore.exceptions import ClientError
 from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
@@ -11,8 +13,11 @@ from dependencies import get_current_user
 
 router = APIRouter(prefix="/catalog_admin", tags=["catalog_admin"])
 
-UPLOAD_DIR = "uploads/catalog"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# ========== Настройки Yandex Cloud Object Storage ==========
+YC_ACCESS_KEY = os.getenv("YC_ACCESS_KEY")
+YC_SECRET_KEY = os.getenv("YC_SECRET_KEY")
+YC_BUCKET = os.getenv("YC_BUCKET")
+YC_ENDPOINT = "https://storage.yandexcloud.net"
 
 # ========== Схемы для карточек ==========
 class CatalogCardCreate(BaseModel):
@@ -41,7 +46,7 @@ class CatalogSettingsUpdate(BaseModel):
     planning_dept_phone_ru: Optional[str] = None
     planning_dept_phone_en: Optional[str] = None
 
-# ========== Загрузка файлов ==========
+# ========== Загрузка файлов в облако ==========
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
@@ -56,14 +61,54 @@ async def upload_file(
     if ext not in allowed:
         raise HTTPException(status_code=400, detail="Invalid file type")
     
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    filename = f"{timestamp}_{file.filename}"
-    file_path = os.path.join(UPLOAD_DIR, filename)
+    if not YC_ACCESS_KEY or not YC_SECRET_KEY or not YC_BUCKET:
+        raise HTTPException(
+            status_code=500,
+            detail="Yandex Cloud credentials not configured"
+        )
     
-    with open(file_path, "wb") as buffer:
-        shutil.copyfileobj(file.file, buffer)
-    
-    return {"url": f"/uploads/catalog/{filename}"}
+    try:
+        # Создаём клиент для Yandex Object Storage
+        session = boto3.session.Session()
+        s3 = session.client(
+            service_name='s3',
+            endpoint_url=YC_ENDPOINT,
+            aws_access_key_id=YC_ACCESS_KEY,
+            aws_secret_access_key=YC_SECRET_KEY,
+            region_name='ru-central1'
+        )
+        
+        # Генерируем уникальное имя файла
+        unique_filename = f"{uuid.uuid4()}{ext}"
+        folder = "catalog"
+        key = f"{folder}/{unique_filename}"
+        
+        # Читаем файл
+        content = await file.read()
+        
+        # Определяем Content-Type
+        content_type = 'application/pdf' if ext == '.pdf' else 'application/zip' if ext == '.zip' else 'text/html'
+        
+        # Загружаем в бакет
+        s3.put_object(
+            Bucket=YC_BUCKET,
+            Key=key,
+            Body=content,
+            ContentType=content_type,
+            ACL='public-read'
+        )
+        
+        # Формируем публичную ссылку
+        public_url = f"https://storage.yandexcloud.net/{YC_BUCKET}/{key}"
+        
+        return {"url": public_url}
+        
+    except ClientError as e:
+        print(f"Yandex Cloud upload error: {e}")
+        raise HTTPException(status_code=500, detail=f"Storage error: {e}")
+    except Exception as e:
+        print(f"Upload exception: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
 # ========== CRUD для карточек каталога ==========
 @router.get("/cards")
