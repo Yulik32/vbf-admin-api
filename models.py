@@ -194,3 +194,25 @@ class CatalogSettings(Base):
     planning_dept_phone_en = Column(String(100), nullable=True)
     updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+
+class Vacancy(Base):
+    __tablename__ = "vacancies"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    title_ru = Column(String(500), nullable=False)
+    title_en = Column(String(500), nullable=False)
+    experience_ru = Column(String(200), nullable=False)
+    experience_en = Column(String(200), nullable=False)
+    salary_ru = Column(String(100), nullable=False)
+    salary_en = Column(String(100), nullable=False)
+    description_ru = Column(Text, nullable=False)
+    description_en = Column(Text, nullable=False)
+    category = Column(String(50), nullable=False)  # beginner, training, experience
+    type = Column(String(50), nullable=False)     # technical, engineering
+    image_url = Column(String(500), nullable=True)
+    order = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_by = Column(Integer, ForeignKey("users.id"))
+    
+    updater = relationship("User", foreign_keys=[updated_by])
