@@ -1,8 +1,10 @@
 # routers/vacancies.py
 import os
+import boto3
 import uuid
+from botocore.exceptions import ClientError
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
 from database import get_db
 import models
@@ -12,9 +14,11 @@ from dependencies import get_current_user
 
 router = APIRouter(prefix="/vacancies", tags=["vacancies"])
 
-# ========== Настройки загрузки ==========
-UPLOAD_DIR = "uploads/vacancies"
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# ========== Настройки Yandex Cloud Object Storage ==========
+YC_ACCESS_KEY = os.getenv("YC_ACCESS_KEY")
+YC_SECRET_KEY = os.getenv("YC_SECRET_KEY")
+YC_BUCKET = os.getenv("YC_BUCKET")
+YC_ENDPOINT = "https://storage.yandexcloud.net"
 
 # ========== Схемы ==========
 class VacancyCreate(BaseModel):
@@ -46,27 +50,67 @@ class VacancyUpdate(BaseModel):
     order: Optional[int] = None
     is_active: Optional[bool] = None
 
-# ========== Загрузка изображения ==========
+# ========== Загрузка изображения в Yandex Cloud ==========
 @router.post("/upload-image")
 async def upload_vacancy_image(
     file: UploadFile = File(...),
+    db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
     if current_user.role != 'admin':
         raise HTTPException(status_code=403, detail="Admin rights required")
     
+    # Проверка расширения
     allowed = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'}
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in allowed:
-        raise HTTPException(status_code=400, detail="Invalid file type")
+        raise HTTPException(status_code=400, detail="Invalid file type. Allowed: jpg, jpeg, png, gif, webp, svg")
     
-    unique_filename = f"{uuid.uuid4()}{ext}"
-    file_path = os.path.join(UPLOAD_DIR, unique_filename)
+    if not YC_ACCESS_KEY or not YC_SECRET_KEY or not YC_BUCKET:
+        raise HTTPException(
+            status_code=500,
+            detail="Yandex Cloud credentials not configured"
+        )
     
-    with open(file_path, "wb") as buffer:
-        buffer.write(await file.read())
-    
-    return {"url": f"/uploads/vacancies/{unique_filename}"}
+    try:
+        # Создаём клиент для Yandex Object Storage
+        session = boto3.session.Session()
+        s3 = session.client(
+            service_name='s3',
+            endpoint_url=YC_ENDPOINT,
+            aws_access_key_id=YC_ACCESS_KEY,
+            aws_secret_access_key=YC_SECRET_KEY,
+            region_name='ru-central1'
+        )
+        
+        # Генерируем уникальное имя файла
+        unique_filename = f"{uuid.uuid4()}{ext}"
+        folder = "vacancies"
+        key = f"{folder}/{unique_filename}"
+        
+        # Читаем файл
+        content = await file.read()
+        
+        # Загружаем в бакет
+        s3.put_object(
+            Bucket=YC_BUCKET,
+            Key=key,
+            Body=content,
+            ContentType=file.content_type,
+            ACL='public-read'
+        )
+        
+        # Формируем публичную ссылку
+        public_url = f"https://storage.yandexcloud.net/{YC_BUCKET}/{key}"
+        
+        return {"url": public_url}
+        
+    except ClientError as e:
+        print(f"Yandex Cloud upload error: {e}")
+        raise HTTPException(status_code=500, detail=f"Storage error: {e}")
+    except Exception as e:
+        print(f"Upload exception: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
 # ========== Получить все вакансии (публичный) ==========
 @router.get("/")
