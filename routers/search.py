@@ -83,12 +83,21 @@ def search(
 
     for vacancy in vacancies:
         title_vacancy = vacancy.title_ru if lang == "ru" else vacancy.title_en
+        description_vacancy = vacancy.description_ru if lang == "ru" else vacancy.description_en
+        
+        # Находим фрагмент текста с искомым словом
+        fragment = ""
+        if q.lower() in title_vacancy.lower():
+            fragment = get_fragment(title_vacancy, q)
+        elif description_vacancy and q.lower() in description_vacancy.lower():
+            fragment = get_fragment(description_vacancy, q)
+        
         results.append({
             "page": "job",
-            "title": "Вакансии" if lang == "ru" else "Vacancies",  # Заголовок - страница
-            "subtitle": title_vacancy,  # Подзаголовок - название вакансии
+            "title": "Вакансии" if lang == "ru" else "Vacancies",
+            "subtitle": title_vacancy,
             "route": "/job",
-            "fragments": [title_vacancy]
+            "fragments": [fragment] if fragment else [title_vacancy]
         })
     
     # 3. Поиск по руководителям
@@ -145,15 +154,24 @@ def search(
             func.lower(models.QualityCard.description_en).like(search_term)
         )
     ).all()
-    
+
     for card in quality_cards:
         title = card.title_ru if lang == "ru" else card.title_en
+        description = card.description_ru if lang == "ru" else card.description_en
+        
+        # Находим фрагмент текста с искомым словом
+        fragment = ""
+        if q.lower() in title.lower():
+            fragment = get_fragment(title, q)
+        elif description and q.lower() in description.lower():
+            fragment = get_fragment(description, q)
+        
         results.append({
             "page": "license",
-            "title": title,
-            "page_name": "Лицензии и качество" if lang == "ru" else "Licenses and Quality",
+            "title": "Лицензии и качество" if lang == "ru" else "Licenses and Quality",
+            "subtitle": title,
             "route": "/license",
-            "fragments": [card.description_ru[:150] + "..." if card.description_ru else ""]
+            "fragments": [fragment] if fragment else [title[:100] + "..."]
         })
     
     # Удаляем дубликаты страниц
