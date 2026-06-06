@@ -77,23 +77,18 @@ def search(
             func.lower(models.Vacancy.title_ru).like(search_term),
             func.lower(models.Vacancy.title_en).like(search_term),
             func.lower(models.Vacancy.description_ru).like(search_term),
-            func.lower(models.Vacancy.description_en).like(search_term),
-            func.lower(models.Vacancy.experience_ru).like(search_term),
-            func.lower(models.Vacancy.experience_en).like(search_term),
-            func.lower(models.Vacancy.salary_ru).like(search_term),
-            func.lower(models.Vacancy.salary_en).like(search_term)
+            func.lower(models.Vacancy.description_en).like(search_term)
         )
     ).all()
-    
+
     for vacancy in vacancies:
-        title = vacancy.title_ru if lang == "ru" else vacancy.title_en
-        # Название страницы - "Вакансии", а в title - конкретная вакансия
+        title_vacancy = vacancy.title_ru if lang == "ru" else vacancy.title_en
         results.append({
             "page": "job",
-            "title": title,  # Название вакансии
-            "page_name": "Вакансии" if lang == "ru" else "Vacancies",  # Название страницы
+            "title": "Вакансии" if lang == "ru" else "Vacancies",  # Заголовок - страница
+            "subtitle": title_vacancy,  # Подзаголовок - название вакансии
             "route": "/job",
-            "fragments": [get_fragment(vacancy.description_ru if lang == "ru" else vacancy.description_en, q)] if vacancy.description_ru else []
+            "fragments": [title_vacancy]
         })
     
     # 3. Поиск по руководителям
@@ -107,16 +102,16 @@ def search(
             func.lower(models.Manager.position_en).like(search_term)
         )
     ).all()
-    
+
     for manager in managers:
         name = manager.name_ru if lang == "ru" else manager.name_en
         position = manager.position_ru if lang == "ru" else manager.position_en
         results.append({
             "page": "managers",
-            "title": f"{name} - {position}",
-            "page_name": "Руководители" if lang == "ru" else "Managers",  # Название страницы
+            "title": "Руководители" if lang == "ru" else "Managers",  # Заголовок - страница
+            "subtitle": f"{name} - {position}",  # Подзаголовок - найденный контент
             "route": "/managers",
-            "fragments": [f"{position}"]
+            "fragments": [f"{name} - {position}"]
         })
     
     # 4. Поиск по документам охраны труда
