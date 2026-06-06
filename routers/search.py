@@ -55,10 +55,8 @@ def search(
     for content in page_contents:
         page_config = PAGES_CONFIG.get(content.page)
         if page_config:
-            # Проверяем, не добавлена ли уже эта страница
             existing = next((r for r in results if r["page"] == content.page), None)
             if existing:
-                # Если страница уже есть, добавляем найденный фрагмент
                 if content.content and q.lower() in content.content.lower():
                     fragment = get_fragment(content.content, q)
                     if fragment not in existing["fragments"]:
@@ -89,9 +87,11 @@ def search(
     
     for vacancy in vacancies:
         title = vacancy.title_ru if lang == "ru" else vacancy.title_en
+        # Название страницы - "Вакансии", а в title - конкретная вакансия
         results.append({
             "page": "job",
-            "title": f"{title} (Вакансия)",
+            "title": title,  # Название вакансии
+            "page_name": "Вакансии" if lang == "ru" else "Vacancies",  # Название страницы
             "route": "/job",
             "fragments": [get_fragment(vacancy.description_ru if lang == "ru" else vacancy.description_en, q)] if vacancy.description_ru else []
         })
@@ -114,8 +114,9 @@ def search(
         results.append({
             "page": "managers",
             "title": f"{name} - {position}",
+            "page_name": "Руководители" if lang == "ru" else "Managers",  # Название страницы
             "route": "/managers",
-            "fragments": [f"{name}: {position}"]
+            "fragments": [f"{position}"]
         })
     
     # 4. Поиск по документам охраны труда
@@ -132,7 +133,8 @@ def search(
         title = doc.title_ru if lang == "ru" else doc.title_en
         results.append({
             "page": "oxrana",
-            "title": f"{title} (Документ)",
+            "title": title,
+            "page_name": "Охрана труда" if lang == "ru" else "Labor Protection",
             "route": "/oxrana",
             "fragments": [f"Документ: {title}"]
         })
@@ -154,6 +156,7 @@ def search(
         results.append({
             "page": "license",
             "title": title,
+            "page_name": "Лицензии и качество" if lang == "ru" else "Licenses and Quality",
             "route": "/license",
             "fragments": [card.description_ru[:150] + "..." if card.description_ru else ""]
         })
@@ -165,7 +168,6 @@ def search(
         if key not in unique_results:
             unique_results[key] = result
         else:
-            # Объединяем фрагменты
             for frag in result.get("fragments", []):
                 if frag and frag not in unique_results[key]["fragments"]:
                     unique_results[key]["fragments"].append(frag)
@@ -183,18 +185,15 @@ def get_fragment(text: str, query: str, length: int = 150) -> str:
     text_lower = text.lower()
     query_lower = query.lower()
     
-    # Находим позицию первого вхождения
     pos = text_lower.find(query_lower)
     if pos == -1:
         return text[:length] + "..." if len(text) > length else text
     
-    # Определяем начало и конец фрагмента
     start = max(0, pos - 50)
     end = min(len(text), pos + len(query) + 100)
     
     fragment = text[start:end]
     
-    # Добавляем многоточие, если нужно
     if start > 0:
         fragment = "..." + fragment
     if end < len(text):
@@ -203,7 +202,6 @@ def get_fragment(text: str, query: str, length: int = 150) -> str:
     return fragment
 
 
-# ========== Эндпоинт для быстрого поиска с подсказками ==========
 @router.get("/suggest")
 def search_suggest(
     q: str,
