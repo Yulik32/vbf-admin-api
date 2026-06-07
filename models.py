@@ -218,3 +218,40 @@ class Vacancy(Base):
     updated_by = Column(Integer, ForeignKey("users.id"))
     
     updater = relationship("User", foreign_keys=[updated_by])
+
+# ========== Автокаталог ==========
+
+class CarCatalogTable(Base):
+    __tablename__ = "car_catalog_tables"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    table_key = Column(String(50), unique=True, nullable=False)
+    car_name_ru = Column(String(255), nullable=False)
+    car_name_en = Column(String(255), nullable=False)
+    section = Column(String(50), nullable=False, default='passenger')  # passenger, up_to_3t, truck
+    display_order = Column(Integer, default=0)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    updated_by = Column(Integer, ForeignKey("users.id"), nullable=True)
+    
+    # Relationships
+    items = relationship("CarCatalogItem", back_populates="table", cascade="all, delete-orphan")
+    updater = relationship("User", foreign_keys=[updated_by])
+
+
+class CarCatalogItem(Base):
+    __tablename__ = "car_catalog_items"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    table_id = Column(Integer, ForeignKey("car_catalog_tables.id", ondelete="CASCADE"), nullable=False)
+    installation_location_ru = Column(Text, nullable=False)
+    installation_location_en = Column(Text, nullable=False)
+    symbol = Column(String(255), nullable=False)
+    vpz_designation = Column(String(255), nullable=True)
+    display_order = Column(Integer, default=0)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), onupdate=func.now())
+    
+    # Relationships
+    table = relationship("CarCatalogTable", back_populates="items")
