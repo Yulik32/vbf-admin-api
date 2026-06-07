@@ -4,7 +4,7 @@ import boto3
 import uuid
 from botocore.exceptions import ClientError
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
 from sqlalchemy.orm import Session
 from database import get_db
 import models
@@ -60,20 +60,15 @@ async def upload_vacancy_image(
     if current_user.role != 'admin':
         raise HTTPException(status_code=403, detail="Admin rights required")
     
-    # Проверка расширения
     allowed = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'}
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in allowed:
-        raise HTTPException(status_code=400, detail="Invalid file type. Allowed: jpg, jpeg, png, gif, webp, svg")
+        raise HTTPException(status_code=400, detail="Invalid file type")
     
     if not YC_ACCESS_KEY or not YC_SECRET_KEY or not YC_BUCKET:
-        raise HTTPException(
-            status_code=500,
-            detail="Yandex Cloud credentials not configured"
-        )
+        raise HTTPException(status_code=500, detail="Yandex Cloud credentials not configured")
     
     try:
-        # Создаём клиент для Yandex Object Storage
         session = boto3.session.Session()
         s3 = session.client(
             service_name='s3',
@@ -83,15 +78,11 @@ async def upload_vacancy_image(
             region_name='ru-central1'
         )
         
-        # Генерируем уникальное имя файла
         unique_filename = f"{uuid.uuid4()}{ext}"
-        folder = "vacancies"
-        key = f"{folder}/{unique_filename}"
+        key = f"vacancies/{unique_filename}"
         
-        # Читаем файл
         content = await file.read()
         
-        # Загружаем в бакет
         s3.put_object(
             Bucket=YC_BUCKET,
             Key=key,
@@ -100,16 +91,11 @@ async def upload_vacancy_image(
             ACL='public-read'
         )
         
-        # Формируем публичную ссылку
         public_url = f"https://storage.yandexcloud.net/{YC_BUCKET}/{key}"
-        
         return {"url": public_url}
         
-    except ClientError as e:
-        print(f"Yandex Cloud upload error: {e}")
-        raise HTTPException(status_code=500, detail=f"Storage error: {e}")
     except Exception as e:
-        print(f"Upload exception: {str(e)}")
+        print(f"Upload error: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
 # ========== Получить все вакансии (публичный) ==========
@@ -141,7 +127,7 @@ def get_vacancies(
         })
     return result
 
-# ========== Создать вакансию (админ) ==========
+# ========== Создать вакансию (полностью как в oxrana) ==========
 @router.post("/")
 def create_vacancy(
     vacancy: VacancyCreate,
@@ -171,7 +157,7 @@ def create_vacancy(
     db.refresh(new_vacancy)
     return {"id": new_vacancy.id, "message": "Vacancy created"}
 
-# ========== Обновить вакансию (админ) ==========
+# ========== Обновить вакансию ==========
 @router.put("/{vacancy_id}")
 def update_vacancy(
     vacancy_id: int,
@@ -194,7 +180,7 @@ def update_vacancy(
     
     return {"message": "Vacancy updated"}
 
-# ========== Удалить вакансию (админ) ==========
+# ========== Удалить вакансию ==========
 @router.delete("/{vacancy_id}")
 def delete_vacancy(
     vacancy_id: int,
