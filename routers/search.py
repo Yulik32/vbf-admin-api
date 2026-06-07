@@ -29,6 +29,14 @@ PAGES_CONFIG = {
     "yp": {"name_ru": "Управление персоналом", "name_en": "HR management", "route": "/yp"},
 }
 
+# Секции автокаталога для отображения
+CARCATALOG_SECTIONS = {
+    "passenger": {"name_ru": "Легковые автомобили", "name_en": "Passenger cars"},
+    "up_to_3t": {"name_ru": "Автомобили грузоподъемностью до 3т", "name_en": "Trucks up to 3t"},
+    "truck": {"name_ru": "Грузовые автомобили", "name_en": "Trucks"}
+}
+
+
 @router.get("/")
 def search(
     q: str,
@@ -85,7 +93,6 @@ def search(
         title_vacancy = vacancy.title_ru if lang == "ru" else vacancy.title_en
         description_vacancy = vacancy.description_ru if lang == "ru" else vacancy.description_en
         
-        # Находим фрагмент текста с искомым словом
         fragment = ""
         if q.lower() in title_vacancy.lower():
             fragment = get_fragment(title_vacancy, q)
@@ -117,8 +124,8 @@ def search(
         position = manager.position_ru if lang == "ru" else manager.position_en
         results.append({
             "page": "managers",
-            "title": "Руководители" if lang == "ru" else "Managers",  # Заголовок - страница
-            "subtitle": f"{name} - {position}",  # Подзаголовок - найденный контент
+            "title": "Руководители" if lang == "ru" else "Managers",
+            "subtitle": f"{name} - {position}",
             "route": "/managers",
             "fragments": [f"{name} - {position}"]
         })
@@ -159,7 +166,6 @@ def search(
         title = card.title_ru if lang == "ru" else card.title_en
         description = card.description_ru if lang == "ru" else card.description_en
         
-        # Находим фрагмент текста с искомым словом
         fragment = ""
         if q.lower() in title.lower():
             fragment = get_fragment(title, q)
@@ -174,10 +180,106 @@ def search(
             "fragments": [fragment] if fragment else [title[:100] + "..."]
         })
     
+    # 6. ПОИСК ПО АВТОКАТАЛОГУ
+    # Поиск по таблицам (моделям автомобилей)
+    car_tables = db.query(models.CarCatalogTable).filter(
+        models.CarCatalogTable.is_active == True
+    ).filter(
+        or_(
+            func.lower(models.CarCatalogTable.car_name_ru).like(search_term),
+            func.lower(models.CarCatalogTable.car_name_en).like(search_term)
+        )
+    ).all()
+    
+    for table in car_tables:
+        car_name = table.car_name_ru if lang == "ru" else table.car_name_en
+        section_name = CARCATALOG_SECTIONS.get(table.section, {}).get(f"name_{lang}", table.section)
+        
+        # Находим фрагмент с искомым словом
+        fragment = get_fragment(car_name, q) if q.lower() in car_name.lower() else car_name[:100]
+        
+        results.append({
+            "page": "carcatalog",
+            "title": "Автокаталог" if lang == "ru" else "Auto Catalog",
+            "subtitle": f"{car_name}",
+            "section": section_name,
+            "type": "model",
+            "table_id": table.id,
+            "route": f"/carcatalog?model={table.id}",
+            "fragments": [fragment]
+        })
+    
+    # Поиск по записям автокаталога (детали, подшипники)
+    car_items = db.query(models.CarCatalogItem).join(
+        models.CarCatalogTable
+    ).filter(
+        models.CarCatalogTable.is_active == True
+    ).filter(
+        or_(
+            func.lower(models.CarCatalogItem.installation_location_ru).like(search_term),
+            func.lower(models.CarCatalogItem.installation_location_en).like(search_term),
+            func.lower(models.CarCatalogItem.symbol).like(search_term),
+            func.lower(models.CarCatalogItem.vpz_designation).like(search_term)
+        )
+    ).all()
+    
+    # Группируем результаты по таблицам
+    items_by_table = {}
+    for item in car_items:
+        table = item.table
+        car_name = table.car_name_ru if lang == "ru" else table.car_name_en
+        section_name = CARCATALOG_SECTIONS.get(table.section, {}).get(f"name_{lang}", table.section)
+        
+        location = item.installation_location_ru if lang == "ru" else item.installation_location_en
+        
+        # Формируем фрагмент с найденным словом
+        fragment = ""
+        if q.lower() in location.lower():
+            fragment = get_fragment(location, q)
+        elif q.lower() in item.symbol.lower():
+            fragment = f"Symbol: {item.symbol}"
+        elif item.vpz_designation and q.lower() in item.vpz_designation.lower():
+            fragment = f"VPZ: {item.vpz_designation}"
+        else:
+            fragment = f"{location} | Symbol: {item.symbol}"
+        
+        key = f"carcatalog_{table.id}"
+        if key not in items_by_table:
+            items_by_table[key] = {
+                "page": "carcatalog",
+                "title": "Автокаталог" if lang == "ru" else "Auto Catalog",
+                "subtitle": car_name,
+                "section": section_name,
+                "type": "parts",
+                "table_id": table.id,
+                "route": f"/carcatalog?model={table.id}",
+                "fragments": [],
+                "items_count": 0
+            }
+        
+        # Добавляем фрагмент, если его еще нет
+        if fragment not in items_by_table[key]["fragments"]:
+            items_by_table[key]["fragments"].append(fragment)
+        items_by_table[key]["items_count"] += 1
+    
+    # Добавляем результаты из автокаталога
+    for item_result in items_by_table.values():
+        # Ограничиваем количество фрагментов до 3
+        if len(item_result["fragments"]) > 3:
+            item_result["fragments"] = item_result["fragments"][:3]
+            item_result["fragments"].append(f"... и еще {item_result['items_count'] - 3} совпадений")
+        
+        results.append(item_result)
+    
     # Удаляем дубликаты страниц
     unique_results = {}
     for result in results:
-        key = result["page"]
+        # Для автокаталога используем уникальный ключ с table_id
+        if result["page"] == "carcatalog" and "table_id" in result:
+            key = f"{result['page']}_{result['table_id']}"
+        else:
+            key = result["page"]
+        
         if key not in unique_results:
             unique_results[key] = result
         else:
@@ -211,6 +313,9 @@ def get_fragment(text: str, query: str, length: int = 150) -> str:
         fragment = "..." + fragment
     if end < len(text):
         fragment = fragment + "..."
+    
+    # Подсвечиваем найденное слово (опционально)
+    # fragment = fragment.replace(query, f"<mark>{query}</mark>")
     
     return fragment
 
@@ -257,10 +362,122 @@ def search_suggest(
             "type": "vacancy"
         })
     
+    # Поиск по моделям автомобилей
+    car_models = db.query(models.CarCatalogTable).filter(
+        models.CarCatalogTable.is_active == True,
+        or_(
+            func.lower(models.CarCatalogTable.car_name_ru).like(search_term),
+            func.lower(models.CarCatalogTable.car_name_en).like(search_term)
+        )
+    ).limit(5).all()
+    
+    for model in car_models:
+        suggestions.append({
+            "title": model.car_name_ru if lang == "ru" else model.car_name_en,
+            "route": f"/carcatalog?model={model.id}",
+            "type": "car_model",
+            "section": CARCATALOG_SECTIONS.get(model.section, {}).get(f"name_{lang}", model.section)
+        })
+    
+    # Поиск по деталям (символам и обозначениям)
+    car_parts = db.query(models.CarCatalogItem).join(
+        models.CarCatalogTable
+    ).filter(
+        models.CarCatalogTable.is_active == True,
+        or_(
+            func.lower(models.CarCatalogItem.symbol).like(search_term),
+            func.lower(models.CarCatalogItem.vpz_designation).like(search_term),
+            func.lower(models.CarCatalogItem.installation_location_ru).like(search_term)
+        )
+    ).limit(10).all()
+    
+    for part in car_parts:
+        car_name = part.table.car_name_ru if lang == "ru" else part.table.car_name_en
+        location = part.installation_location_ru if lang == "ru" else part.installation_location_en
+        
+        suggestions.append({
+            "title": f"{part.symbol} | {location[:50]}",
+            "subtitle": car_name,
+            "route": f"/carcatalog?model={part.table.id}",
+            "type": "car_part",
+            "symbol": part.symbol,
+            "vpz": part.vpz_designation
+        })
+    
     # Убираем дубликаты
     unique = []
+    seen = set()
     for s in suggestions:
-        if s not in unique:
+        key = f"{s['type']}_{s['title']}"
+        if key not in seen:
+            seen.add(key)
             unique.append(s)
     
-    return {"suggestions": unique[:10]}
+    return {"suggestions": unique[:15]}
+
+
+@router.get("/carcatalog")
+def search_carcatalog(
+    q: str,
+    lang: str = "ru",
+    db: Session = Depends(get_db)
+):
+    """
+    Специализированный поиск только по автокаталогу
+    """
+    if not q or len(q.strip()) < 2:
+        return {"results": [], "message": "Введите минимум 2 символа для поиска"}
+    
+    search_term = f"%{q.lower()}%"
+    results = {
+        "models": [],
+        "parts": [],
+        "total": 0
+    }
+    
+    # Поиск по моделям автомобилей
+    models = db.query(models.CarCatalogTable).filter(
+        models.CarCatalogTable.is_active == True,
+        or_(
+            func.lower(models.CarCatalogTable.car_name_ru).like(search_term),
+            func.lower(models.CarCatalogTable.car_name_en).like(search_term)
+        )
+    ).all()
+    
+    for model in models:
+        results["models"].append({
+            "id": model.id,
+            "name": model.car_name_ru if lang == "ru" else model.car_name_en,
+            "section": model.section,
+            "section_name": CARCATALOG_SECTIONS.get(model.section, {}).get(f"name_{lang}", model.section),
+            "items_count": db.query(models.CarCatalogItem).filter(
+                models.CarCatalogItem.table_id == model.id
+            ).count()
+        })
+    
+    # Поиск по деталям
+    parts = db.query(models.CarCatalogItem).join(
+        models.CarCatalogTable
+    ).filter(
+        models.CarCatalogTable.is_active == True,
+        or_(
+            func.lower(models.CarCatalogItem.installation_location_ru).like(search_term),
+            func.lower(models.CarCatalogItem.installation_location_en).like(search_term),
+            func.lower(models.CarCatalogItem.symbol).like(search_term),
+            func.lower(models.CarCatalogItem.vpz_designation).like(search_term)
+        )
+    ).all()
+    
+    for part in parts:
+        results["parts"].append({
+            "id": part.id,
+            "table_id": part.table_id,
+            "car_model": part.table.car_name_ru if lang == "ru" else part.table.car_name_en,
+            "installation_location": part.installation_location_ru if lang == "ru" else part.installation_location_en,
+            "symbol": part.symbol,
+            "vpz_designation": part.vpz_designation
+        })
+    
+    results["total"] = len(results["models"]) + len(results["parts"])
+    
+    return results

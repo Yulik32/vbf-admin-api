@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from database import engine, Base
-from routers import auth, users, cards, settings, content, upload, realty, managers, service, oxrana, license, catalog, vacancies, search
+from routers import auth, users, cards, settings, content, upload, realty, managers, service, oxrana, license, catalog, vacancies, search, car_catalog
 import os
 
 # Создаём таблицы в БД
@@ -43,6 +43,7 @@ app.include_router(license.router)
 app.include_router(catalog.router)
 app.include_router(vacancies.router)
 app.include_router(search.router)
+app.include_router(car_catalog.router)
 
 # ========== МОНТИРУЕМ ВСЕ СТАТИЧЕСКИЕ ПАПКИ ==========
 
