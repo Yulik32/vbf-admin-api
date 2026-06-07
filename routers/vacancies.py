@@ -4,7 +4,7 @@ import boto3
 import uuid
 from botocore.exceptions import ClientError
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Response
 from sqlalchemy.orm import Session
 from database import get_db
 import models
@@ -49,6 +49,31 @@ class VacancyUpdate(BaseModel):
     image_url: Optional[str] = None
     order: Optional[int] = None
     is_active: Optional[bool] = None
+
+# ========== ОБРАБОТКА OPTIONS ЗАПРОСОВ ДЛЯ CORS ==========
+@router.options("/")
+async def options_vacancies():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+@router.options("/{vacancy_id}")
+async def options_vacancy():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
 
 # ========== Загрузка изображения в Yandex Cloud ==========
 @router.post("/upload-image")
@@ -127,7 +152,7 @@ def get_vacancies(
         })
     return result
 
-# ========== Создать вакансию (полностью как в oxrana) ==========
+# ========== Создать вакансию ==========
 @router.post("/")
 def create_vacancy(
     vacancy: VacancyCreate,
