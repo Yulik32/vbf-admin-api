@@ -1,4 +1,4 @@
-# update_to_super_admin.py
+# create_user_fixed.py
 import psycopg2
 from passlib.context import CryptContext
 import os
@@ -16,99 +16,48 @@ DB_CONFIG = {
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
-def update_to_super_admin():
-    print("=" * 50)
-    print("ОБНОВЛЕНИЕ ДО SUPER_ADMIN")
-    print("=" * 50)
-    print(f"Хост: {DB_CONFIG['host']}")
-    print(f"База: {DB_CONFIG['database']}")
-    print()
+def create_user():
+    conn = psycopg2.connect(**DB_CONFIG)
+    cursor = conn.cursor()
     
+    # Добавляем колонку если нет
     try:
-        conn = psycopg2.connect(**DB_CONFIG)
-        cursor = conn.cursor()
-        print("✅ Подключение к PostgreSQL установлено")
-        
-        # Сначала добавляем колонку page_permissions если её нет
-        try:
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS page_permissions TEXT")
-            cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP")
-            conn.commit()
-            print("✅ Добавлены недостающие колонки")
-        except Exception as e:
-            print(f"⚠️ Колонки уже есть или ошибка: {e}")
-        
-        # Проверяем существующих пользователей
-        cursor.execute("SELECT id, email, role FROM users")
-        users = cursor.fetchall()
-        print("\n📋 Существующие пользователи:")
-        for user in users:
-            print(f"   ID: {user[0]}, Email: {user[1]}, Role: {user[2]}")
-        
-        # Обновляем пользователя с id=1 до super_admin
-        email = "superadmin@vbf.ru"
-        password = "superadmin123"
-        hashed_password = pwd_context.hash(password)
-        
-        # Проверяем, существует ли пользователь с id=1
-        cursor.execute("SELECT id, email, role FROM users WHERE id = 1")
-        user = cursor.fetchone()
-        
-        if user:
-            print(f"\n📋 Найден пользователь с id=1:")
-            print(f"   Email: {user[1]}")
-            print(f"   Текущая роль: {user[2]}")
-            
-            # Обновляем существующего пользователя
-            cursor.execute("""
-                UPDATE users 
-                SET role = 'super_admin', 
-                    email = %s,
-                    hashed_password = %s,
-                    full_name = 'Super Administrator',
-                    is_active = true,
-                    page_permissions = NULL
-                WHERE id = 1
-            """, (email, hashed_password))
-            print(f"\n✅ Пользователь с id=1 обновлен до super_admin")
-        else:
-            print("\n⚠️ Пользователь с id=1 не найден")
-            # Создаем нового с id=1
-            cursor.execute("""
-                INSERT INTO users (id, email, hashed_password, full_name, role, is_active, page_permissions)
-                VALUES (1, %s, %s, %s, %s, %s, %s)
-                ON CONFLICT (id) DO UPDATE SET 
-                    role = 'super_admin',
-                    email = EXCLUDED.email,
-                    hashed_password = EXCLUDED.hashed_password,
-                    full_name = EXCLUDED.full_name,
-                    is_active = true,
-                    page_permissions = NULL
-            """, (email, hashed_password, 'Super Administrator', 'super_admin', True, None))
-            print(f"\n✅ Super_admin создан с id=1")
-        
+        cursor.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS page_permissions TEXT")
         conn.commit()
-        
-        # Проверяем результат
-        cursor.execute("SELECT id, email, role FROM users WHERE id = 1")
-        user = cursor.fetchone()
-        print(f"\n📋 Результат:")
-        print(f"   ID: {user[0]}")
-        print(f"   Email: {user[1]}")
-        print(f"   Role: {user[2]}")
-        
-        cursor.close()
-        conn.close()
-        
-        print(f"\n🎉 Готово!")
-        print(f"   Email: {email}")
-        print(f"   Пароль: {password}")
-        print(f"\n⚠️ Используйте эти данные для входа в админку!")
-        
-    except Exception as e:
-        print(f"❌ Ошибка: {e}")
-        import traceback
-        traceback.print_exc()
+    except:
+        pass
+    
+    email = "admin@vbf.ru"
+    password = "admin123"
+    hashed = pwd_context.hash(password)
+    
+    # Удаляем старого
+    cursor.execute("DELETE FROM users WHERE email = %s", (email,))
+    
+    # Создаем нового с ролью super_admin
+    cursor.execute("""
+        INSERT INTO users (email, hashed_password, full_name, role, is_active)
+        VALUES (%s, %s, %s, %s, %s)
+    """, (email, hashed, 'Administrator', 'super_admin', True))
+    
+    conn.commit()
+    
+    print("=" * 50)
+    print("✅ ПОЛЬЗОВАТЕЛЬ СОЗДАН")
+    print("=" * 50)
+    print(f"   Email: {email}")
+    print(f"   Пароль: {password}")
+    print(f"   Роль: super_admin")
+    print("=" * 50)
+    
+    # Проверяем
+    cursor.execute("SELECT id, email, role FROM users WHERE email = %s", (email,))
+    user = cursor.fetchone()
+    if user:
+        print(f"   ID: {user[0]}, Role: {user[2]}")
+    
+    cursor.close()
+    conn.close()
 
 if __name__ == "__main__":
-    update_to_super_admin()
+    create_user()

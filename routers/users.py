@@ -1,5 +1,5 @@
 # routers/users.py
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
 import json
@@ -31,13 +31,66 @@ AVAILABLE_PAGES = [
     {"key": "settings", "name_ru": "Настройки сайта", "name_en": "Settings"},
 ]
 
+# ==================== ОБРАБОТКА OPTIONS ЗАПРОСОВ ДЛЯ CORS ====================
+@router.options("/")
+async def options_users():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, Origin, X-Requested-With",
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Max-Age": "86400",
+        }
+    )
+
+@router.options("/{user_id}")
+async def options_user(user_id: int):
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, Origin, X-Requested-With",
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Max-Age": "86400",
+        }
+    )
+
+@router.options("/pages")
+async def options_pages():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, Origin, X-Requested-With",
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Max-Age": "86400",
+        }
+    )
+
+@router.options("/me")
+async def options_me():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept, Origin, X-Requested-With",
+            "Access-Control-Allow-Credentials": "true",
+            "Access-Control-Max-Age": "86400",
+        }
+    )
+
 # ==================== ТОЛЬКО ДЛЯ SUPER_ADMIN ====================
 
 # Получить всех пользователей (только super_admin)
 @router.get("/", response_model=List[schemas.UserResponse])
 def get_users(
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_super_admin)  # только super_admin
+    current_user: models.User = Depends(get_current_super_admin)
 ):
     users = db.query(models.User).filter(models.User.is_active == True).all()
     for user in users:
@@ -50,7 +103,7 @@ def get_users(
 def create_user(
     user: schemas.UserCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_super_admin)  # только super_admin
+    current_user: models.User = Depends(get_current_super_admin)
 ):
     existing = db.query(models.User).filter(models.User.email == user.email).first()
     if existing:
@@ -81,13 +134,13 @@ def update_user(
     user_id: int,
     user_update: schemas.UserUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_super_admin)  # только super_admin
+    current_user: models.User = Depends(get_current_super_admin)
 ):
     db_user = db.query(models.User).filter(models.User.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
     
-    # Нельзя редактировать самого себя (super_admin не может изменить свои права)
+    # Нельзя редактировать самого себя
     if db_user.id == current_user.id:
         raise HTTPException(status_code=400, detail="Cannot edit your own user")
     
@@ -110,7 +163,7 @@ def update_user(
 def delete_user(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_super_admin)  # только super_admin
+    current_user: models.User = Depends(get_current_super_admin)
 ):
     db_user = db.query(models.User).filter(models.User.id == user_id).first()
     if not db_user:
