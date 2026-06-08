@@ -29,13 +29,11 @@ PAGES_CONFIG = {
     "yp": {"name_ru": "Управление персоналом", "name_en": "HR management", "route": "/yp"},
 }
 
-# Секции автокаталога для отображения
 CARCATALOG_SECTIONS = {
     "passenger": {"name_ru": "Легковые автомобили", "name_en": "Passenger cars"},
     "up_to_3t": {"name_ru": "Автомобили грузоподъемностью до 3т", "name_en": "Trucks up to 3t"},
     "truck": {"name_ru": "Грузовые автомобили", "name_en": "Trucks"}
 }
-
 
 @router.get("/")
 def search(

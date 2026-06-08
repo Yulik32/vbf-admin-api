@@ -11,11 +11,14 @@ class User(Base):
     email = Column(String(100), unique=True, index=True, nullable=False)
     hashed_password = Column(String(255), nullable=False)
     full_name = Column(String(200), nullable=True)
-    role = Column(String(20), default="admin")  # "admin" или "user"
+    role = Column(String(20), default="admin")  # "super_admin", "admin", "editor", "viewer"
     is_active = Column(Boolean, default=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), onupdate=func.now())
-
+    
+    # Права доступа к страницам (JSON поле)
+    page_permissions = Column(Text, nullable=True)  # JSON: {"pages": ["vacancies", "carcatalog"], "can_edit": true, "can_view": true}
+    
 class Card(Base):
     __tablename__ = "cards"
 

@@ -1,15 +1,16 @@
 from pydantic import BaseModel, EmailStr
-from typing import Optional
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 # ----- User schemas -----
 class UserBase(BaseModel):
     email: EmailStr
     full_name: Optional[str] = None
-    role: str = "user"
+    role: str = "user"  # super_admin, admin, editor, viewer
 
 class UserCreate(UserBase):
     password: str
+    page_permissions: Optional[Dict[str, Any]] = None  # {"pages": ["vacancies", "carcatalog"], "can_edit": True}
 
 class UserUpdate(BaseModel):
     email: Optional[EmailStr] = None
@@ -17,6 +18,7 @@ class UserUpdate(BaseModel):
     password: Optional[str] = None
     is_active: Optional[bool] = None
     role: Optional[str] = None
+    page_permissions: Optional[Dict[str, Any]] = None
 
 class UserOut(BaseModel):
     id: int
@@ -24,10 +26,22 @@ class UserOut(BaseModel):
     full_name: Optional[str] = None
     role: str
     is_active: bool
+    page_permissions: Optional[Dict[str, Any]] = None  # Добавляем права доступа
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+# ----- Page permissions schemas -----
+class AvailablePage(BaseModel):
+    key: str
+    name_ru: str
+    name_en: str
+
+class UserPagePermissions(BaseModel):
+    pages: List[str] = []  # Список ключей страниц, доступных пользователю
+    can_edit: bool = False  # Может ли пользователь редактировать страницы
+    can_view: bool = True   # Может ли пользователь просматривать страницы
 
 # ----- Card schemas -----
 class CardBase(BaseModel):
