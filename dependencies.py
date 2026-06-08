@@ -8,6 +8,7 @@ from auth_utils import decode_token
 import models
 
 security = HTTPBearer()
+# 
 
 # Настройки хеширования паролей
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
