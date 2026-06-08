@@ -1,67 +1,57 @@
-# routers/auth.py
-from fastapi import APIRouter, Depends, HTTPException, status
+# dependencies.py
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
-from datetime import timedelta
+from passlib.context import CryptContext
 from database import get_db
-from dependencies import get_password_hash, verify_password, get_current_user
-from auth import create_access_token
+from auth_utils import decode_token
 import models
 
-router = APIRouter(prefix="/auth", tags=["auth"])
+security = HTTPBearer()
 
-@router.post("/login")
-def login(email: str, password: str, db: Session = Depends(get_db)):
-    """Вход в систему"""
-    user = db.query(models.User).filter(models.User.email == email).first()
-    
-    if not user or not verify_password(password, user.hashed_password):
+# Настройки хеширования паролей
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def get_password_hash(password: str) -> str:
+    """Хеширует пароль"""
+    return pwd_context.hash(password)
+
+def verify_password(plain_password: str, hashed_password: str) -> bool:
+    """Проверяет пароль"""
+    return pwd_context.verify(plain_password, hashed_password)
+
+def get_current_user(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+    db: Session = Depends(get_db)
+):
+    token_data = decode_token(credentials.credentials)
+    if token_data is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Incorrect email or password",
+            detail="Invalid or expired token",
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    if not user.is_active:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="User account is disabled"
-        )
+    user = db.query(models.User).filter(models.User.email == token_data["email"]).first()
+    if user is None:
+        raise HTTPException(status_code=401, detail="User not found")
     
-    access_token = create_access_token(data={"sub": user.email, "email": user.email})
-    
-    # Возвращаем информацию о пользователе вместе с токеном
-    import json
-    return {
-        "access_token": access_token,
-        "token_type": "bearer",
-        "user": {
-            "id": user.id,
-            "email": user.email,
-            "full_name": user.full_name,
-            "role": user.role,
-            "page_permissions": json.loads(user.page_permissions) if user.page_permissions else {"pages": [], "can_edit": False}
-        }
-    }
+    return user
 
-@router.post("/register")
-def register(email: str, password: str, full_name: str = None, db: Session = Depends(get_db)):
-    """Регистрация нового пользователя (только для super_admin)"""
-    # Проверка существующего пользователя
-    existing = db.query(models.User).filter(models.User.email == email).first()
-    if existing:
-        raise HTTPException(status_code=400, detail="Email already registered")
-    
-    hashed_password = get_password_hash(password)
-    
-    new_user = models.User(
-        email=email,
-        hashed_password=hashed_password,
-        full_name=full_name,
-        role="viewer",  # По умолчанию - только просмотр
-        is_active=True
-    )
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-    
-    return {"message": "User created successfully", "user_id": new_user.id}
+def get_current_admin(current_user: models.User = Depends(get_current_user)):
+    """Проверяет, является ли пользователь администратором"""
+    if current_user.role not in ["admin", "super_admin"]:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin rights required"
+        )
+    return current_user
+
+def get_current_super_admin(current_user: models.User = Depends(get_current_user)):
+    """Проверяет, является ли пользователь супер-администратором"""
+    if current_user.role != "super_admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Super admin rights required"
+        )
+    return current_user
