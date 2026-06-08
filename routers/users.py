@@ -6,7 +6,6 @@ from database import get_db
 import models
 import schemas
 from dependencies import get_current_user, get_password_hash, get_current_super_admin
-from auth_utils import decode_token
 
 router = APIRouter(prefix="/users", tags=["users"])
 

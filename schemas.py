@@ -1,3 +1,4 @@
+# schemas.py
 from pydantic import BaseModel, EmailStr
 from typing import Optional, List, Dict, Any
 from datetime import datetime
@@ -20,17 +21,25 @@ class UserUpdate(BaseModel):
     role: Optional[str] = None
     page_permissions: Optional[Dict[str, Any]] = None
 
-class UserOut(BaseModel):
+class UserResponse(BaseModel):
     id: int
     email: str
     full_name: Optional[str] = None
     role: str
     is_active: bool
-    page_permissions: Optional[Dict[str, Any]] = None  # Добавляем права доступа
+    page_permissions: Optional[Dict[str, Any]] = None
     created_at: datetime
 
     class Config:
         from_attributes = True
+
+# ----- Auth schemas -----
+class Token(BaseModel):
+    access_token: str
+    token_type: str
+
+class TokenData(BaseModel):
+    email: Optional[str] = None
 
 # ----- Page permissions schemas -----
 class AvailablePage(BaseModel):
@@ -39,9 +48,9 @@ class AvailablePage(BaseModel):
     name_en: str
 
 class UserPagePermissions(BaseModel):
-    pages: List[str] = []  # Список ключей страниц, доступных пользователю
-    can_edit: bool = False  # Может ли пользователь редактировать страницы
-    can_view: bool = True   # Может ли пользователь просматривать страницы
+    pages: List[str] = []
+    can_edit: bool = False
+    can_view: bool = True
 
 # ----- Card schemas -----
 class CardBase(BaseModel):
@@ -89,11 +98,3 @@ class SettingOut(BaseModel):
 
     class Config:
         from_attributes = True
-
-# ----- Auth schemas -----
-class Token(BaseModel):
-    access_token: str
-    token_type: str
-
-class TokenData(BaseModel):
-    email: Optional[str] = None
