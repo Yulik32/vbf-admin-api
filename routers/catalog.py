@@ -1,15 +1,16 @@
+# routers/catalog.py
 import os
 import boto3
 import uuid
 from botocore.exceptions import ClientError
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Response
 from sqlalchemy.orm import Session
 from database import get_db
 import models
 from pydantic import BaseModel
 from typing import Optional, List
-from dependencies import get_current_user
+from dependencies import get_current_user, check_page_permission
 
 router = APIRouter(prefix="/catalog_admin", tags=["catalog_admin"])
 
@@ -46,29 +47,95 @@ class CatalogSettingsUpdate(BaseModel):
     planning_dept_phone_ru: Optional[str] = None
     planning_dept_phone_en: Optional[str] = None
 
+# ========== Вспомогательная функция для проверки прав ==========
+def require_catalog_edit(current_user: models.User = Depends(get_current_user)):
+    """Проверяет права на редактирование каталога"""
+    if current_user.role in ["admin", "super_admin"]:
+        return current_user
+    
+    if not check_page_permission(current_user, "catalog", "edit"):
+        raise HTTPException(
+            status_code=403,
+            detail="No edit rights for catalog"
+        )
+    return current_user
+
+def require_catalog_view(current_user: models.User = Depends(get_current_user)):
+    """Проверяет права на просмотр каталога в админке"""
+    if current_user.role in ["admin", "super_admin"]:
+        return current_user
+    
+    if not check_page_permission(current_user, "catalog", "view"):
+        raise HTTPException(
+            status_code=403,
+            detail="No view rights for catalog"
+        )
+    return current_user
+
+# ========== ОБРАБОТКА OPTIONS ЗАПРОСОВ ДЛЯ CORS ==========
+@router.options("/upload")
+async def options_upload():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+@router.options("/cards")
+async def options_cards():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+@router.options("/cards/{card_id}")
+async def options_card(card_id: int):
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+@router.options("/settings")
+async def options_settings():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, PUT, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
 # ========== Загрузка файлов в облако ==========
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_catalog_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     allowed = {'.pdf', '.htm', '.html', '.zip'}
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in allowed:
         raise HTTPException(status_code=400, detail="Invalid file type")
     
     if not YC_ACCESS_KEY or not YC_SECRET_KEY or not YC_BUCKET:
-        raise HTTPException(
-            status_code=500,
-            detail="Yandex Cloud credentials not configured"
-        )
+        raise HTTPException(status_code=500, detail="Yandex Cloud credentials not configured")
     
     try:
-        # Создаём клиент для Yandex Object Storage
         session = boto3.session.Session()
         s3 = session.client(
             service_name='s3',
@@ -78,18 +145,12 @@ async def upload_file(
             region_name='ru-central1'
         )
         
-        # Генерируем уникальное имя файла
         unique_filename = f"{uuid.uuid4()}{ext}"
-        folder = "catalog"
-        key = f"{folder}/{unique_filename}"
-        
-        # Читаем файл
+        key = f"catalog/{unique_filename}"
         content = await file.read()
         
-        # Определяем Content-Type
         content_type = 'application/pdf' if ext == '.pdf' else 'application/zip' if ext == '.zip' else 'text/html'
         
-        # Загружаем в бакет
         s3.put_object(
             Bucket=YC_BUCKET,
             Key=key,
@@ -98,10 +159,7 @@ async def upload_file(
             ACL='public-read'
         )
         
-        # Формируем публичную ссылку
-        public_url = f"https://storage.yandexcloud.net/{YC_BUCKET}/{key}"
-        
-        return {"url": public_url}
+        return {"url": f"https://storage.yandexcloud.net/{YC_BUCKET}/{key}"}
         
     except ClientError as e:
         print(f"Yandex Cloud upload error: {e}")
@@ -110,7 +168,8 @@ async def upload_file(
         print(f"Upload exception: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
-# ========== CRUD для карточек каталога ==========
+# ========== Публичные эндпоинты (без авторизации) ==========
+
 @router.get("/cards")
 def get_catalog_cards(
     lang: str = "ru",
@@ -136,71 +195,6 @@ def get_catalog_cards(
         })
     return result
 
-@router.post("/cards")
-def create_catalog_card(
-    card: CatalogCardCreate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
-    new_card = models.CatalogCard(
-        title_ru=card.title_ru,
-        title_en=card.title_en,
-        description_ru=card.description_ru,
-        description_en=card.description_en,
-        file_url=card.file_url,
-        icon_type=card.icon_type,
-        order=card.order,
-        updated_by=current_user.id
-    )
-    db.add(new_card)
-    db.commit()
-    db.refresh(new_card)
-    return {"id": new_card.id, "message": "Card created"}
-
-@router.put("/cards/{card_id}")
-def update_catalog_card(
-    card_id: int,
-    card: CatalogCardUpdate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
-    db_card = db.query(models.CatalogCard).filter(models.CatalogCard.id == card_id).first()
-    if not db_card:
-        raise HTTPException(status_code=404, detail="Card not found")
-    
-    for field, value in card.dict(exclude_unset=True).items():
-        setattr(db_card, field, value)
-    
-    db_card.updated_by = current_user.id
-    db.commit()
-    
-    return {"message": "Card updated"}
-
-@router.delete("/cards/{card_id}")
-def delete_catalog_card(
-    card_id: int,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
-    db_card = db.query(models.CatalogCard).filter(models.CatalogCard.id == card_id).first()
-    if not db_card:
-        raise HTTPException(status_code=404, detail="Card not found")
-    
-    db.delete(db_card)
-    db.commit()
-    
-    return {"message": "Card deleted"}
-
-# ========== Настройки каталога (телефоны) ==========
 @router.get("/settings")
 def get_catalog_settings(
     lang: str = "ru",
@@ -227,15 +221,92 @@ def get_catalog_settings(
         "planning_dept_phone_en": settings.planning_dept_phone_en
     }
 
+# ========== Админские эндпоинты (с проверкой прав) ==========
+
+@router.get("/cards/admin")
+def get_catalog_cards_admin(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_catalog_view)
+):
+    """Получить все карточки каталога для админки (включая неактивные)"""
+    cards = db.query(models.CatalogCard).order_by(models.CatalogCard.order).all()
+    
+    result = []
+    for card in cards:
+        result.append({
+            "id": card.id,
+            "title_ru": card.title_ru,
+            "title_en": card.title_en,
+            "description_ru": card.description_ru,
+            "description_en": card.description_en,
+            "file_url": card.file_url,
+            "icon_type": card.icon_type,
+            "order": card.order,
+            "is_active": card.is_active
+        })
+    return result
+
+@router.post("/cards")
+def create_catalog_card(
+    card: CatalogCardCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_catalog_edit)
+):
+    new_card = models.CatalogCard(
+        title_ru=card.title_ru,
+        title_en=card.title_en,
+        description_ru=card.description_ru,
+        description_en=card.description_en,
+        file_url=card.file_url,
+        icon_type=card.icon_type,
+        order=card.order,
+        updated_by=current_user.id
+    )
+    db.add(new_card)
+    db.commit()
+    db.refresh(new_card)
+    return {"id": new_card.id, "message": "Card created"}
+
+@router.put("/cards/{card_id}")
+def update_catalog_card(
+    card_id: int,
+    card: CatalogCardUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_catalog_edit)
+):
+    db_card = db.query(models.CatalogCard).filter(models.CatalogCard.id == card_id).first()
+    if not db_card:
+        raise HTTPException(status_code=404, detail="Card not found")
+    
+    for field, value in card.dict(exclude_unset=True).items():
+        setattr(db_card, field, value)
+    
+    db_card.updated_by = current_user.id
+    db.commit()
+    
+    return {"message": "Card updated"}
+
+@router.delete("/cards/{card_id}")
+def delete_catalog_card(
+    card_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_catalog_edit)
+):
+    db_card = db.query(models.CatalogCard).filter(models.CatalogCard.id == card_id).first()
+    if not db_card:
+        raise HTTPException(status_code=404, detail="Card not found")
+    
+    db.delete(db_card)
+    db.commit()
+    
+    return {"message": "Card deleted"}
+
 @router.put("/settings")
 def update_catalog_settings(
     settings_data: CatalogSettingsUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_catalog_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     settings = db.query(models.CatalogSettings).first()
     if not settings:
         settings = models.CatalogSettings(updated_by=current_user.id)

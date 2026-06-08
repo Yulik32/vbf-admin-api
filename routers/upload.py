@@ -1,12 +1,13 @@
+# routers/upload.py
 import os
 import boto3
 import uuid
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Response
 from sqlalchemy.orm import Session
 from database import get_db
 import models
-from dependencies import get_current_user
+from dependencies import get_current_user, check_page_permission
 
 router = APIRouter(prefix="/upload", tags=["upload"])
 
@@ -18,6 +19,65 @@ YC_ENDPOINT = "https://storage.yandexcloud.net"
 
 ALLOWED_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'}
 
+# ========== Утилиты для проверки прав ==========
+def check_upload_permission(page: str, current_user: models.User, action: str = "edit"):
+    """Проверяет права на загрузку для конкретной страницы"""
+    # Страницы и их ключи для проверки прав
+    page_keys = {
+        "main": "main_page",
+        "history": "history",
+        "managers": "managers",
+        "license": "license",
+        "rent": "rent",
+        "realty": "realty",
+        "service": "service",
+        "catalog": "catalog",
+        "carcatalog": "carcatalog",
+        "other_products": "other_products",
+        "individual_packaging": "individual_packaging",
+        "repairkits": "repairkits",
+        "oxrana": "oxrana",
+        "job": "job",
+    }
+    
+    page_key = page_keys.get(page, page)
+    return check_page_permission(current_user, page_key, action)
+
+def require_upload_edit(page: str):
+    """Декоратор для проверки прав на загрузку изображений для страницы"""
+    def checker(current_user: models.User = Depends(get_current_user)):
+        if current_user.role in ["admin", "super_admin"]:
+            return current_user
+        if not check_upload_permission(page, current_user, "edit"):
+            raise HTTPException(status_code=403, detail=f"No edit rights for {page}")
+        return current_user
+    return checker
+
+# ========== ОБРАБОТКА OPTIONS ЗАПРОСОВ ДЛЯ CORS ==========
+@router.options("/{page}/{section}")
+async def options_upload():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, GET, DELETE, PUT, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+@router.options("/{media_id}")
+async def options_media():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "DELETE, PUT, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
 # ========== Загрузка файла в облако ==========
 @router.post("/{page}/{section}")
 async def upload_file(
@@ -27,11 +87,8 @@ async def upload_file(
     alt_ru: str = Form(None),
     alt_en: str = Form(None),
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_upload_edit(page))
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     # Проверка расширения
     file_ext = os.path.splitext(file.filename)[1].lower()
     if file_ext not in ALLOWED_EXTENSIONS:
@@ -104,9 +161,7 @@ async def upload_file(
         print(f"Upload exception: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
-# ========== Остальные эндпоинты ==========
-
-# Получить все изображения для страницы/секции
+# ========== Получить все изображения для страницы/секции (публичный) ==========
 @router.get("/{page}/{section}")
 def get_media(
     page: str,
@@ -127,19 +182,45 @@ def get_media(
         "order": m.order
     } for m in media]
 
-# Удалить изображение
+# ========== Получить медиа для админки (с проверкой прав) ==========
+@router.get("/admin/{page}/{section}")
+def get_media_admin(
+    page: str,
+    section: str,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_upload_edit(page))
+):
+    """Получить все медиа для страницы (включая неактивные) для админки"""
+    media = db.query(models.UploadedMedia).filter(
+        models.UploadedMedia.page == page,
+        models.UploadedMedia.section == section
+    ).order_by(models.UploadedMedia.order).all()
+    
+    return [{
+        "id": m.id,
+        "url": m.file_path,
+        "alt_ru": m.alt_ru,
+        "alt_en": m.alt_en,
+        "order": m.order,
+        "is_active": m.is_active,
+        "original_name": m.original_name
+    } for m in media]
+
+# ========== Удалить изображение ==========
 @router.delete("/{media_id}")
 def delete_media(
     media_id: int,
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     media = db.query(models.UploadedMedia).filter(models.UploadedMedia.id == media_id).first()
     if not media:
         raise HTTPException(status_code=404, detail="Media not found")
+    
+    # Проверяем права на страницу, к которой относится медиа
+    if not check_upload_permission(media.page, current_user, "edit"):
+        if current_user.role not in ["admin", "super_admin"]:
+            raise HTTPException(status_code=403, detail=f"No edit rights for {media.page}")
     
     # Примечание: файл в Yandex Cloud не удаляется автоматически
     # Если нужно удалять и файл из облака — нужно добавить отдельную логику
@@ -149,7 +230,7 @@ def delete_media(
     
     return {"message": "Media deleted"}
 
-# Обновить порядок и alt-тексты
+# ========== Обновить порядок и alt-тексты ==========
 @router.put("/{media_id}")
 def update_media(
     media_id: int,
@@ -159,12 +240,14 @@ def update_media(
     db: Session = Depends(get_db),
     current_user: models.User = Depends(get_current_user)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     media = db.query(models.UploadedMedia).filter(models.UploadedMedia.id == media_id).first()
     if not media:
         raise HTTPException(status_code=404, detail="Media not found")
+    
+    # Проверяем права на страницу, к которой относится медиа
+    if not check_upload_permission(media.page, current_user, "edit"):
+        if current_user.role not in ["admin", "super_admin"]:
+            raise HTTPException(status_code=403, detail=f"No edit rights for {media.page}")
     
     if alt_ru is not None:
         media.alt_ru = alt_ru

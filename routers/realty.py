@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+# routers/realty.py
+from fastapi import APIRouter, Depends, HTTPException, status, Response
 from sqlalchemy.orm import Session
 from typing import List
 from database import get_db
 import models
 from pydantic import BaseModel
-from dependencies import get_current_user
+from dependencies import get_current_user, check_page_permission
 
 router = APIRouter(prefix="/realty", tags=["realty"])
 
@@ -22,7 +23,59 @@ class AddressUpdate(BaseModel):
     order: int = None
     is_active: bool = None
 
-# Получить все адреса
+# ========== Вспомогательная функция для проверки прав ==========
+def require_realty_edit(current_user: models.User = Depends(get_current_user)):
+    """Проверяет права на редактирование адресов недвижимости"""
+    if current_user.role in ["admin", "super_admin"]:
+        return current_user
+    
+    if not check_page_permission(current_user, "realty", "edit"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No edit rights for realty addresses"
+        )
+    return current_user
+
+def require_realty_view(current_user: models.User = Depends(get_current_user)):
+    """Проверяет права на просмотр адресов недвижимости в админке"""
+    if current_user.role in ["admin", "super_admin"]:
+        return current_user
+    
+    if not check_page_permission(current_user, "realty", "view"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No view rights for realty addresses"
+        )
+    return current_user
+
+# ========== ОБРАБОТКА OPTIONS ЗАПРОСОВ ДЛЯ CORS ==========
+@router.options("/addresses")
+async def options_addresses():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+@router.options("/addresses/{address_id}")
+async def options_address():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+# ========== Публичные эндпоинты (без авторизации) ==========
+
+# Получить все адреса (публичный)
 @router.get("/addresses")
 def get_addresses(
     lang: str = "ru",
@@ -44,16 +97,36 @@ def get_addresses(
         })
     return result
 
-# Создать адрес (только админ)
+# ========== Админские эндпоинты (с проверкой прав) ==========
+
+# Получить все адреса для админки (включая неактивные)
+@router.get("/addresses/admin")
+def get_addresses_admin(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_realty_view)
+):
+    """Получить все адреса для админки"""
+    addresses = db.query(models.RealtyAddress).order_by(models.RealtyAddress.order).all()
+    
+    result = []
+    for addr in addresses:
+        result.append({
+            "id": addr.id,
+            "address_ru": addr.address_ru,
+            "address_en": addr.address_en,
+            "map_link": addr.map_link,
+            "order": addr.order,
+            "is_active": addr.is_active
+        })
+    return result
+
+# Создать адрес
 @router.post("/addresses")
 def create_address(
     address: AddressCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_realty_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     new_address = models.RealtyAddress(
         address_ru=address.address_ru,
         address_en=address.address_en,
@@ -66,17 +139,14 @@ def create_address(
     db.refresh(new_address)
     return {"id": new_address.id, "message": "Address created"}
 
-# Обновить адрес (только админ)
+# Обновить адрес
 @router.put("/addresses/{address_id}")
 def update_address(
     address_id: int,
     address: AddressUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_realty_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     db_address = db.query(models.RealtyAddress).filter(models.RealtyAddress.id == address_id).first()
     if not db_address:
         raise HTTPException(status_code=404, detail="Address not found")
@@ -97,16 +167,13 @@ def update_address(
     
     return {"message": "Address updated"}
 
-# Удалить адрес (только админ)
+# Удалить адрес
 @router.delete("/addresses/{address_id}")
 def delete_address(
     address_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_realty_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     db_address = db.query(models.RealtyAddress).filter(models.RealtyAddress.id == address_id).first()
     if not db_address:
         raise HTTPException(status_code=404, detail="Address not found")

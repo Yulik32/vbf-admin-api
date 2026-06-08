@@ -2,15 +2,13 @@
 import os
 import boto3
 import uuid
-from botocore.exceptions import ClientError
-from datetime import datetime
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Response
 from sqlalchemy.orm import Session
 from database import get_db
 import models
 from pydantic import BaseModel
-from typing import Optional, List
-from dependencies import get_current_user
+from typing import Optional
+from dependencies import get_current_user, check_page_permission
 
 router = APIRouter(prefix="/vacancies", tags=["vacancies"])
 
@@ -50,41 +48,53 @@ class VacancyUpdate(BaseModel):
     order: Optional[int] = None
     is_active: Optional[bool] = None
 
+# ========== Утилита для проверки прав на вакансии ==========
+def require_vacancies_edit(current_user: models.User = Depends(get_current_user)):
+    """Проверяет права на редактирование вакансий"""
+    if not check_page_permission(current_user, "job", "edit"):
+        raise HTTPException(status_code=403, detail="No edit rights for vacancies")
+    return current_user
+
+def require_vacancies_view(current_user: models.User = Depends(get_current_user)):
+    """Проверяет права на просмотр вакансий в админке"""
+    if not check_page_permission(current_user, "job", "view"):
+        raise HTTPException(status_code=403, detail="No view rights for vacancies")
+    return current_user
+
 # ========== ОБРАБОТКА OPTIONS ЗАПРОСОВ ДЛЯ CORS ==========
 @router.options("/")
 async def options_vacancies():
-    return Response(
-        status_code=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
-            "Access-Control-Allow-Credentials": "true",
-        }
-    )
+    return Response(status_code=200, headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+        "Access-Control-Allow-Credentials": "true",
+    })
 
 @router.options("/{vacancy_id}")
 async def options_vacancy():
-    return Response(
-        status_code=200,
-        headers={
-            "Access-Control-Allow-Origin": "*",
-            "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
-            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
-            "Access-Control-Allow-Credentials": "true",
-        }
-    )
+    return Response(status_code=200, headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+        "Access-Control-Allow-Credentials": "true",
+    })
+
+@router.options("/upload-image")
+async def options_upload():
+    return Response(status_code=200, headers={
+        "Access-Control-Allow-Origin": "*",
+        "Access-Control-Allow-Methods": "POST, OPTIONS",
+        "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+        "Access-Control-Allow-Credentials": "true",
+    })
 
 # ========== Загрузка изображения в Yandex Cloud ==========
 @router.post("/upload-image")
 async def upload_vacancy_image(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_vacancies_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     allowed = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg'}
     ext = os.path.splitext(file.filename)[1].lower()
     if ext not in allowed:
@@ -97,7 +107,7 @@ async def upload_vacancy_image(
         session = boto3.session.Session()
         s3 = session.client(
             service_name='s3',
-            endpoint_url=YC_ENDPOINT,
+            endpoint_url="https://storage.yandexcloud.net",
             aws_access_key_id=YC_ACCESS_KEY,
             aws_secret_access_key=YC_SECRET_KEY,
             region_name='ru-central1'
@@ -105,7 +115,6 @@ async def upload_vacancy_image(
         
         unique_filename = f"{uuid.uuid4()}{ext}"
         key = f"vacancies/{unique_filename}"
-        
         content = await file.read()
         
         s3.put_object(
@@ -116,8 +125,7 @@ async def upload_vacancy_image(
             ACL='public-read'
         )
         
-        public_url = f"https://storage.yandexcloud.net/{YC_BUCKET}/{key}"
-        return {"url": public_url}
+        return {"url": f"https://storage.yandexcloud.net/{YC_BUCKET}/{key}"}
         
     except Exception as e:
         print(f"Upload error: {str(e)}")
@@ -125,56 +133,58 @@ async def upload_vacancy_image(
 
 # ========== Получить все вакансии (публичный) ==========
 @router.get("/")
-def get_vacancies(
-    lang: str = "ru",
-    db: Session = Depends(get_db)
-):
-    vacancies = db.query(models.Vacancy).filter(
-        models.Vacancy.is_active == True
-    ).order_by(models.Vacancy.order).all()
+def get_vacancies(lang: str = "ru", db: Session = Depends(get_db)):
+    vacancies = db.query(models.Vacancy).filter(models.Vacancy.is_active == True).order_by(models.Vacancy.order).all()
     
-    result = []
-    for v in vacancies:
-        result.append({
-            "id": v.id,
-            "title_ru": v.title_ru,
-            "title_en": v.title_en,
-            "experience_ru": v.experience_ru,
-            "experience_en": v.experience_en,
-            "salary_ru": v.salary_ru,
-            "salary_en": v.salary_en,
-            "description_ru": v.description_ru,
-            "description_en": v.description_en,
-            "category": v.category,
-            "type": v.type,
-            "image_url": v.image_url,
-            "order": v.order
-        })
-    return result
+    return [{
+        "id": v.id,
+        "title_ru": v.title_ru,
+        "title_en": v.title_en,
+        "experience_ru": v.experience_ru,
+        "experience_en": v.experience_en,
+        "salary_ru": v.salary_ru,
+        "salary_en": v.salary_en,
+        "description_ru": v.description_ru,
+        "description_en": v.description_en,
+        "category": v.category,
+        "type": v.type,
+        "image_url": v.image_url,
+        "order": v.order
+    } for v in vacancies]
 
-# ========== Создать вакансию ==========
+# ========== Админские эндпоинты ==========
+@router.get("/admin")
+def get_vacancies_admin(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_vacancies_view)
+):
+    """Получить все вакансии для админки (с неактивными)"""
+    vacancies = db.query(models.Vacancy).order_by(models.Vacancy.order).all()
+    return [{
+        "id": v.id,
+        "title_ru": v.title_ru,
+        "title_en": v.title_en,
+        "experience_ru": v.experience_ru,
+        "experience_en": v.experience_en,
+        "salary_ru": v.salary_ru,
+        "salary_en": v.salary_en,
+        "description_ru": v.description_ru,
+        "description_en": v.description_en,
+        "category": v.category,
+        "type": v.type,
+        "image_url": v.image_url,
+        "order": v.order,
+        "is_active": v.is_active
+    } for v in vacancies]
+
 @router.post("/")
 def create_vacancy(
     vacancy: VacancyCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_vacancies_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     new_vacancy = models.Vacancy(
-        title_ru=vacancy.title_ru,
-        title_en=vacancy.title_en,
-        experience_ru=vacancy.experience_ru,
-        experience_en=vacancy.experience_en,
-        salary_ru=vacancy.salary_ru,
-        salary_en=vacancy.salary_en,
-        description_ru=vacancy.description_ru,
-        description_en=vacancy.description_en,
-        category=vacancy.category,
-        type=vacancy.type,
-        image_url=vacancy.image_url,
-        order=vacancy.order,
+        **vacancy.dict(),
         updated_by=current_user.id
     )
     db.add(new_vacancy)
@@ -182,17 +192,13 @@ def create_vacancy(
     db.refresh(new_vacancy)
     return {"id": new_vacancy.id, "message": "Vacancy created"}
 
-# ========== Обновить вакансию ==========
 @router.put("/{vacancy_id}")
 def update_vacancy(
     vacancy_id: int,
     vacancy: VacancyUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_vacancies_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     db_vacancy = db.query(models.Vacancy).filter(models.Vacancy.id == vacancy_id).first()
     if not db_vacancy:
         raise HTTPException(status_code=404, detail="Vacancy not found")
@@ -205,16 +211,12 @@ def update_vacancy(
     
     return {"message": "Vacancy updated"}
 
-# ========== Удалить вакансию ==========
 @router.delete("/{vacancy_id}")
 def delete_vacancy(
     vacancy_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_vacancies_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     db_vacancy = db.query(models.Vacancy).filter(models.Vacancy.id == vacancy_id).first()
     if not db_vacancy:
         raise HTTPException(status_code=404, detail="Vacancy not found")

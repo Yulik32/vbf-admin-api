@@ -1,15 +1,16 @@
+# routers/oxrana.py
 import os
 import boto3
 import uuid
 from botocore.exceptions import ClientError
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Response
 from sqlalchemy.orm import Session
 from database import get_db
 import models
 from pydantic import BaseModel
 from typing import Optional
-from dependencies import get_current_user
+from dependencies import get_current_user, check_page_permission
 
 router = APIRouter(prefix="/oxrana", tags=["oxrana"])
 
@@ -35,16 +36,74 @@ class OxranaDocumentUpdate(BaseModel):
     order: Optional[int] = None
     is_active: Optional[bool] = None
 
+# ========== Вспомогательная функция для проверки прав ==========
+def require_oxrana_edit(current_user: models.User = Depends(get_current_user)):
+    """Проверяет права на редактирование документов охраны труда"""
+    if current_user.role in ["admin", "super_admin"]:
+        return current_user
+    
+    if not check_page_permission(current_user, "oxrana", "edit"):
+        raise HTTPException(
+            status_code=403,
+            detail="No edit rights for oxrana documents"
+        )
+    return current_user
+
+def require_oxrana_view(current_user: models.User = Depends(get_current_user)):
+    """Проверяет права на просмотр документов охраны труда в админке"""
+    if current_user.role in ["admin", "super_admin"]:
+        return current_user
+    
+    if not check_page_permission(current_user, "oxrana", "view"):
+        raise HTTPException(
+            status_code=403,
+            detail="No view rights for oxrana documents"
+        )
+    return current_user
+
+# ========== ОБРАБОТКА OPTIONS ЗАПРОСОВ ДЛЯ CORS ==========
+@router.options("/upload")
+async def options_upload():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+@router.options("/documents")
+async def options_documents():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+@router.options("/documents/{doc_id}")
+async def options_document():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
 # ========== Загрузка PDF в облако ==========
 @router.post("/upload")
 async def upload_pdf(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_oxrana_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     # Проверка расширения
     if not file.filename.endswith('.pdf'):
         raise HTTPException(status_code=400, detail="Only PDF files are allowed")
@@ -99,9 +158,9 @@ async def upload_pdf(
         print(f"Upload exception: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
-# ========== Остальные эндпоинты ==========
+# ========== Публичные эндпоинты (без авторизации) ==========
 
-# Получить все документы
+# Получить все документы (публичный)
 @router.get("/documents")
 def get_documents(
     lang: str = "ru",
@@ -124,16 +183,37 @@ def get_documents(
         })
     return result
 
+# ========== Админские эндпоинты (с проверкой прав) ==========
+
+# Получить все документы для админки (включая неактивные)
+@router.get("/documents/admin")
+def get_documents_admin(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_oxrana_view)
+):
+    """Получить все документы для админки"""
+    docs = db.query(models.OxranaDocument).order_by(models.OxranaDocument.order).all()
+    
+    result = []
+    for doc in docs:
+        result.append({
+            "id": doc.id,
+            "title_ru": doc.title_ru,
+            "title_en": doc.title_en,
+            "file_path": doc.file_path,
+            "file_name": doc.file_name,
+            "order": doc.order,
+            "is_active": doc.is_active
+        })
+    return result
+
 # Создать документ
 @router.post("/documents")
 def create_document(
     doc: OxranaDocumentCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_oxrana_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     new_doc = models.OxranaDocument(
         title_ru=doc.title_ru,
         title_en=doc.title_en,
@@ -153,11 +233,8 @@ def update_document(
     doc_id: int,
     doc: OxranaDocumentUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_oxrana_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     db_doc = db.query(models.OxranaDocument).filter(models.OxranaDocument.id == doc_id).first()
     if not db_doc:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -175,11 +252,8 @@ def update_document(
 def delete_document(
     doc_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_oxrana_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     db_doc = db.query(models.OxranaDocument).filter(models.OxranaDocument.id == doc_id).first()
     if not db_doc:
         raise HTTPException(status_code=404, detail="Document not found")

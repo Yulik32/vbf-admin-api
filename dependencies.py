@@ -6,9 +6,9 @@ from passlib.context import CryptContext
 from database import get_db
 from auth_utils import decode_token
 import models
+import json
 
 security = HTTPBearer()
-# 
 
 # Настройки хеширования паролей
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -33,7 +33,7 @@ def get_current_user(
             headers={"WWW-Authenticate": "Bearer"},
         )
     
-    user = db.query(models.User).filter(models.User.email == token_data["email"]).first()
+    user = db.query(models.User).filter(models.User.email == token_data.get("email")).first()
     if user is None:
         raise HTTPException(status_code=401, detail="User not found")
     
@@ -56,3 +56,27 @@ def get_current_super_admin(current_user: models.User = Depends(get_current_user
             detail="Super admin rights required"
         )
     return current_user
+
+# ========== НОВАЯ ФУНКЦИЯ ДЛЯ ПРОВЕРКИ ПРАВ НА СТРАНИЦЫ ==========
+def check_page_permission(user: models.User, page_key: str, action: str = "view") -> bool:
+    """
+    Проверяет, имеет ли пользователь доступ к странице
+    action: "view" или "edit"
+    """
+    # super_admin и admin имеют полный доступ
+    if user.role in ["super_admin", "admin"]:
+        return True
+    
+    # Проверяем права из page_permissions
+    if user.page_permissions:
+        try:
+            perms = json.loads(user.page_permissions) if isinstance(user.page_permissions, str) else user.page_permissions
+            allowed_pages = perms.get("pages", [])
+            can_edit = perms.get("can_edit", False)
+            
+            if page_key in allowed_pages:
+                return True if action == "view" else can_edit
+        except:
+            pass
+    
+    return False

@@ -1,15 +1,16 @@
+# routers/license.py
 import os
 import boto3
 import uuid
 from botocore.exceptions import ClientError
 from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Response
 from sqlalchemy.orm import Session
 from database import get_db
 import models
 from pydantic import BaseModel
 from typing import Optional, List
-from dependencies import get_current_user
+from dependencies import get_current_user, check_page_permission
 
 router = APIRouter(prefix="/license", tags=["license"])
 
@@ -54,16 +55,86 @@ class LicenseContentUpdate(BaseModel):
     licenses_title_ru: Optional[str] = None
     licenses_title_en: Optional[str] = None
 
+# ========== Вспомогательная функция для проверки прав ==========
+def require_license_edit(current_user: models.User = Depends(get_current_user)):
+    """Проверяет права на редактирование лицензий и качества"""
+    if current_user.role in ["admin", "super_admin"]:
+        return current_user
+    
+    if not check_page_permission(current_user, "license", "edit"):
+        raise HTTPException(
+            status_code=403,
+            detail="No edit rights for license page"
+        )
+    return current_user
+
+def require_license_view(current_user: models.User = Depends(get_current_user)):
+    """Проверяет права на просмотр лицензий и качества в админке"""
+    if current_user.role in ["admin", "super_admin"]:
+        return current_user
+    
+    if not check_page_permission(current_user, "license", "view"):
+        raise HTTPException(
+            status_code=403,
+            detail="No view rights for license page"
+        )
+    return current_user
+
+# ========== ОБРАБОТКА OPTIONS ЗАПРОСОВ ДЛЯ CORS ==========
+@router.options("/upload")
+async def options_upload():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+@router.options("/quality")
+async def options_quality():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+@router.options("/quality/{card_id}")
+async def options_quality_card():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+@router.options("/content")
+async def options_content():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, PUT, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
 # ========== Загрузка файлов (Yandex Cloud Object Storage) ==========
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_license_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     # Проверка типа файла
     allowed = {'.jpg', '.jpeg', '.png', '.gif', '.webp', '.svg', '.pdf'}
     ext = os.path.splitext(file.filename)[1].lower()
@@ -102,7 +173,7 @@ async def upload_file(
             Key=key,
             Body=content,
             ContentType=file.content_type,
-            ACL='public-read'  # Делаем файл публичным
+            ACL='public-read'
         )
         
         # Формируем публичную ссылку
@@ -125,7 +196,9 @@ async def upload_file(
         print(f"Upload exception: {str(e)}")
         raise HTTPException(status_code=500, detail=f"Upload error: {str(e)}")
 
-# ========== CRUD для карточек качества ==========
+# ========== Публичные эндпоинты (без авторизации) ==========
+
+# CRUD для карточек качества (публичный)
 @router.get("/quality")
 def get_quality_cards(
     lang: str = "ru",
@@ -151,71 +224,7 @@ def get_quality_cards(
         })
     return result
 
-@router.post("/quality")
-def create_quality_card(
-    card: QualityCardCreate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
-    new_card = models.QualityCard(
-        image_url=card.image_url,
-        title_ru=card.title_ru,
-        title_en=card.title_en,
-        description_ru=card.description_ru,
-        description_en=card.description_en,
-        certificate_url=card.certificate_url,
-        order=card.order,
-        updated_by=current_user.id
-    )
-    db.add(new_card)
-    db.commit()
-    db.refresh(new_card)
-    return {"id": new_card.id, "message": "Card created"}
-
-@router.put("/quality/{card_id}")
-def update_quality_card(
-    card_id: int,
-    card: QualityCardUpdate,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
-    db_card = db.query(models.QualityCard).filter(models.QualityCard.id == card_id).first()
-    if not db_card:
-        raise HTTPException(status_code=404, detail="Card not found")
-    
-    for field, value in card.dict(exclude_unset=True).items():
-        setattr(db_card, field, value)
-    
-    db_card.updated_by = current_user.id
-    db.commit()
-    
-    return {"message": "Card updated"}
-
-@router.delete("/quality/{card_id}")
-def delete_quality_card(
-    card_id: int,
-    db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
-):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
-    db_card = db.query(models.QualityCard).filter(models.QualityCard.id == card_id).first()
-    if not db_card:
-        raise HTTPException(status_code=404, detail="Card not found")
-    
-    db.delete(db_card)
-    db.commit()
-    
-    return {"message": "Card deleted"}
-
-# ========== Управление контентом лицензий ==========
+# Управление контентом лицензий (публичный)
 @router.get("/content")
 def get_license_content(
     lang: str = "ru",
@@ -264,15 +273,97 @@ def get_license_content(
         "licenses_title_en": content.licenses_title_en
     }
 
+# ========== Админские эндпоинты (с проверкой прав) ==========
+
+# Получить все карточки качества для админки (включая неактивные)
+@router.get("/quality/admin")
+def get_quality_cards_admin(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_license_view)
+):
+    """Получить все карточки качества для админки"""
+    cards = db.query(models.QualityCard).order_by(models.QualityCard.order).all()
+    
+    result = []
+    for card in cards:
+        result.append({
+            "id": card.id,
+            "image_url": card.image_url,
+            "title_ru": card.title_ru,
+            "title_en": card.title_en,
+            "description_ru": card.description_ru,
+            "description_en": card.description_en,
+            "certificate_url": card.certificate_url,
+            "order": card.order,
+            "is_active": card.is_active
+        })
+    return result
+
+# Создать карточку качества
+@router.post("/quality")
+def create_quality_card(
+    card: QualityCardCreate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_license_edit)
+):
+    new_card = models.QualityCard(
+        image_url=card.image_url,
+        title_ru=card.title_ru,
+        title_en=card.title_en,
+        description_ru=card.description_ru,
+        description_en=card.description_en,
+        certificate_url=card.certificate_url,
+        order=card.order,
+        updated_by=current_user.id
+    )
+    db.add(new_card)
+    db.commit()
+    db.refresh(new_card)
+    return {"id": new_card.id, "message": "Card created"}
+
+# Обновить карточку качества
+@router.put("/quality/{card_id}")
+def update_quality_card(
+    card_id: int,
+    card: QualityCardUpdate,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_license_edit)
+):
+    db_card = db.query(models.QualityCard).filter(models.QualityCard.id == card_id).first()
+    if not db_card:
+        raise HTTPException(status_code=404, detail="Card not found")
+    
+    for field, value in card.dict(exclude_unset=True).items():
+        setattr(db_card, field, value)
+    
+    db_card.updated_by = current_user.id
+    db.commit()
+    
+    return {"message": "Card updated"}
+
+# Удалить карточку качества
+@router.delete("/quality/{card_id}")
+def delete_quality_card(
+    card_id: int,
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_license_edit)
+):
+    db_card = db.query(models.QualityCard).filter(models.QualityCard.id == card_id).first()
+    if not db_card:
+        raise HTTPException(status_code=404, detail="Card not found")
+    
+    db.delete(db_card)
+    db.commit()
+    
+    return {"message": "Card deleted"}
+
+# Обновить контент лицензий
 @router.put("/content")
 def update_license_content(
     content_data: LicenseContentUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_license_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     content = db.query(models.LicenseContent).first()
     if not content:
         content = models.LicenseContent(updated_by=current_user.id)

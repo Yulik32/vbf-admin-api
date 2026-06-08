@@ -1,3 +1,4 @@
+# routers/users.py
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from typing import List, Optional
@@ -30,81 +31,32 @@ AVAILABLE_PAGES = [
     {"key": "settings", "name_ru": "Настройки сайта", "name_en": "Settings"},
 ]
 
-# Проверка прав доступа
-def check_page_permission(user: models.User, page_key: str, action: str = "view"):
-    """
-    Проверяет, имеет ли пользователь доступ к странице
-    action: "view" или "edit"
-    """
-    if user.role == "super_admin":
-        return True
-    
-    if user.page_permissions:
-        try:
-            perms = json.loads(user.page_permissions) if isinstance(user.page_permissions, str) else user.page_permissions
-            allowed_pages = perms.get("pages", [])
-            can_edit = perms.get("can_edit", False)
-            
-            if page_key in allowed_pages:
-                if action == "view":
-                    return True
-                elif action == "edit":
-                    return can_edit
-        except:
-            pass
-    
-    return False
+# ==================== ТОЛЬКО ДЛЯ SUPER_ADMIN ====================
 
-
-@router.get("/pages")
-def get_available_pages(current_user: models.User = Depends(get_current_user)):
-    """Получить список страниц, доступных текущему пользователю"""
-    if current_user.role == "super_admin":
-        return AVAILABLE_PAGES
-    
-    if current_user.page_permissions:
-        try:
-            perms = json.loads(current_user.page_permissions) if isinstance(current_user.page_permissions, str) else current_user.page_permissions
-            allowed_pages = perms.get("pages", [])
-            can_edit = perms.get("can_edit", False)
-            
-            pages = [p for p in AVAILABLE_PAGES if p["key"] in allowed_pages]
-            return pages
-        except:
-            pass
-    
-    return []
-
-
+# Получить всех пользователей (только super_admin)
 @router.get("/", response_model=List[schemas.UserResponse])
 def get_users(
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_super_admin)  # только super_admin
 ):
-    """Получить всех пользователей (только для super_admin)"""
-    if current_user.role != "super_admin":
-        raise HTTPException(status_code=403, detail="Only super admin can view users")
-    
-    return db.query(models.User).filter(models.User.is_active == True).all()
+    users = db.query(models.User).filter(models.User.is_active == True).all()
+    for user in users:
+        if user.page_permissions:
+            user.page_permissions = json.loads(user.page_permissions)
+    return users
 
-
+# Создать пользователя (только super_admin)
 @router.post("/", response_model=schemas.UserResponse)
 def create_user(
     user: schemas.UserCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_super_admin)  # только super_admin
 ):
-    """Создать пользователя (только для super_admin)"""
-    if current_user.role != "super_admin":
-        raise HTTPException(status_code=403, detail="Only super admin can create users")
-    
     existing = db.query(models.User).filter(models.User.email == user.email).first()
     if existing:
         raise HTTPException(status_code=400, detail="Email already registered")
     
     hashed_password = get_password_hash(user.password)
-    
-    # Преобразуем page_permissions в JSON строку
     page_perms_json = json.dumps(user.page_permissions) if user.page_permissions else None
     
     new_user = models.User(
@@ -118,23 +70,26 @@ def create_user(
     db.commit()
     db.refresh(new_user)
     
+    if new_user.page_permissions:
+        new_user.page_permissions = json.loads(new_user.page_permissions)
+    
     return new_user
 
-
+# Обновить пользователя (только super_admin)
 @router.put("/{user_id}", response_model=schemas.UserResponse)
 def update_user(
     user_id: int,
     user_update: schemas.UserUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_super_admin)  # только super_admin
 ):
-    """Обновить пользователя (только для super_admin)"""
-    if current_user.role != "super_admin":
-        raise HTTPException(status_code=403, detail="Only super admin can update users")
-    
     db_user = db.query(models.User).filter(models.User.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
+    
+    # Нельзя редактировать самого себя (super_admin не может изменить свои права)
+    if db_user.id == current_user.id:
+        raise HTTPException(status_code=400, detail="Cannot edit your own user")
     
     update_data = user_update.model_dump(exclude_unset=True)
     for field, value in update_data.items():
@@ -144,19 +99,19 @@ def update_user(
     
     db.commit()
     db.refresh(db_user)
+    
+    if db_user.page_permissions:
+        db_user.page_permissions = json.loads(db_user.page_permissions)
+    
     return db_user
 
-
+# Удалить пользователя (только super_admin)
 @router.delete("/{user_id}")
 def delete_user(
     user_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(get_current_super_admin)  # только super_admin
 ):
-    """Удалить пользователя (только для super_admin)"""
-    if current_user.role != "super_admin":
-        raise HTTPException(status_code=403, detail="Only super admin can delete users")
-    
     db_user = db.query(models.User).filter(models.User.id == user_id).first()
     if not db_user:
         raise HTTPException(status_code=404, detail="User not found")
@@ -169,13 +124,34 @@ def delete_user(
     
     return {"message": "User deleted"}
 
+# ==================== ПУБЛИЧНЫЕ ЭНДПОИНТЫ (для всех авторизованных) ====================
 
+# Получить список доступных страниц для текущего пользователя
+@router.get("/pages")
+def get_available_pages(
+    current_user: models.User = Depends(get_current_user)
+):
+    """Получить список страниц, доступных текущему пользователю"""
+    if current_user.role == "super_admin":
+        return AVAILABLE_PAGES
+    
+    if current_user.page_permissions:
+        try:
+            perms = json.loads(current_user.page_permissions) if isinstance(current_user.page_permissions, str) else current_user.page_permissions
+            allowed_pages = perms.get("pages", [])
+            
+            pages = [p for p in AVAILABLE_PAGES if p["key"] in allowed_pages]
+            return pages
+        except:
+            pass
+    
+    return []
+
+# Получить информацию о текущем пользователе
 @router.get("/me", response_model=schemas.UserResponse)
 def get_me(
     current_user: models.User = Depends(get_current_user)
 ):
-    """Получить информацию о текущем пользователе"""
-    # Преобразуем page_permissions из JSON
     if current_user.page_permissions:
         current_user.page_permissions = json.loads(current_user.page_permissions)
     return current_user

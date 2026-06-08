@@ -1,10 +1,11 @@
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+# routers/car_catalog.py
+from fastapi import APIRouter, Depends, HTTPException, status, Query, Response
 from sqlalchemy.orm import Session
 from typing import List, Optional
 from database import get_db
 import models
 from pydantic import BaseModel
-from dependencies import get_current_user
+from dependencies import get_current_user, check_page_permission
 from datetime import datetime
 
 router = APIRouter(prefix="/car-catalog", tags=["car-catalog"])
@@ -64,9 +65,99 @@ class CarCatalogTableResponse(CarCatalogTableBase):
         from_attributes = True
 
 
-# ==================== ТАБЛИЦЫ ====================
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 
-# Получить все таблицы с записями
+def require_carcatalog_edit(current_user: models.User = Depends(get_current_user)):
+    """Проверяет права на редактирование автокаталога"""
+    if current_user.role in ["admin", "super_admin"]:
+        return current_user
+    
+    if not check_page_permission(current_user, "carcatalog", "edit"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No edit rights for car catalog"
+        )
+    return current_user
+
+def require_carcatalog_view(current_user: models.User = Depends(get_current_user)):
+    """Проверяет права на просмотр автокаталога в админке"""
+    if current_user.role in ["admin", "super_admin"]:
+        return current_user
+    
+    if not check_page_permission(current_user, "carcatalog", "view"):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="No view rights for car catalog"
+        )
+    return current_user
+
+
+# ==================== ОБРАБОТКА OPTIONS ЗАПРОСОВ ====================
+
+@router.options("/tables")
+async def options_tables():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+@router.options("/tables/{table_id}")
+async def options_table(table_id: int):
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+@router.options("/items")
+async def options_items():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+@router.options("/items/{item_id}")
+async def options_item(item_id: int):
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "PUT, DELETE, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+@router.options("/import")
+async def options_import():
+    return Response(
+        status_code=200,
+        headers={
+            "Access-Control-Allow-Origin": "*",
+            "Access-Control-Allow-Methods": "POST, OPTIONS",
+            "Access-Control-Allow-Headers": "Content-Type, Authorization, Accept",
+            "Access-Control-Allow-Credentials": "true",
+        }
+    )
+
+
+# ==================== ПУБЛИЧНЫЕ ЭНДПОИНТЫ (без авторизации) ====================
+
+# Получить все таблицы с записями (публичный)
 @router.get("/tables", response_model=List[CarCatalogTableResponse])
 def get_tables(
     section: Optional[str] = None,
@@ -81,7 +172,6 @@ def get_tables(
     
     tables = query.order_by(models.CarCatalogTable.display_order).all()
     
-    # Загружаем записи для каждой таблицы
     for table in tables:
         table.items = db.query(models.CarCatalogItem).filter(
             models.CarCatalogItem.table_id == table.id
@@ -90,7 +180,7 @@ def get_tables(
     return tables
 
 
-# Получить одну таблицу
+# Получить одну таблицу (публичный)
 @router.get("/tables/{table_id}", response_model=CarCatalogTableResponse)
 def get_table(
     table_id: int,
@@ -111,17 +201,32 @@ def get_table(
     return table
 
 
-# Создать таблицу (только админ)
+# ==================== АДМИНСКИЕ ЭНДПОИНТЫ (с проверкой прав) ====================
+
+# Получить все таблицы для админки (включая неактивные)
+@router.get("/tables/admin/all")
+def get_tables_admin(
+    db: Session = Depends(get_db),
+    current_user: models.User = Depends(require_carcatalog_view)
+):
+    """Получить все таблицы для админки (включая неактивные)"""
+    tables = db.query(models.CarCatalogTable).order_by(models.CarCatalogTable.display_order).all()
+    
+    for table in tables:
+        table.items = db.query(models.CarCatalogItem).filter(
+            models.CarCatalogItem.table_id == table.id
+        ).order_by(models.CarCatalogItem.display_order).all()
+    
+    return tables
+
+
+# Создать таблицу
 @router.post("/tables", response_model=CarCatalogTableResponse)
 def create_table(
     table: CarCatalogTableCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_carcatalog_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
-    # Проверка уникальности table_key
     existing = db.query(models.CarCatalogTable).filter(
         models.CarCatalogTable.table_key == table.table_key
     ).first()
@@ -144,17 +249,14 @@ def create_table(
     return new_table
 
 
-# Обновить таблицу (только админ)
+# Обновить таблицу
 @router.put("/tables/{table_id}", response_model=CarCatalogTableResponse)
 def update_table(
     table_id: int,
     table_update: CarCatalogTableUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_carcatalog_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     db_table = db.query(models.CarCatalogTable).filter(
         models.CarCatalogTable.id == table_id
     ).first()
@@ -178,16 +280,13 @@ def update_table(
     return db_table
 
 
-# Удалить таблицу (мягкое удаление, только админ)
+# Удалить таблицу (мягкое удаление)
 @router.delete("/tables/{table_id}")
 def delete_table(
     table_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_carcatalog_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     db_table = db.query(models.CarCatalogTable).filter(
         models.CarCatalogTable.id == table_id
     ).first()
@@ -204,17 +303,13 @@ def delete_table(
 
 # ==================== ЗАПИСИ ====================
 
-# Создать запись (только админ)
+# Создать запись
 @router.post("/items", response_model=CarCatalogItemResponse)
 def create_item(
     item: CarCatalogItemCreate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_carcatalog_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
-    # Проверяем существование таблицы
     table = db.query(models.CarCatalogTable).filter(
         models.CarCatalogTable.id == item.table_id,
         models.CarCatalogTable.is_active == True
@@ -237,17 +332,14 @@ def create_item(
     return new_item
 
 
-# Обновить запись (только админ)
+# Обновить запись
 @router.put("/items/{item_id}", response_model=CarCatalogItemResponse)
 def update_item(
     item_id: int,
     item_update: CarCatalogItemUpdate,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_carcatalog_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     db_item = db.query(models.CarCatalogItem).filter(
         models.CarCatalogItem.id == item_id
     ).first()
@@ -266,16 +358,13 @@ def update_item(
     return db_item
 
 
-# Удалить запись (только админ)
+# Удалить запись
 @router.delete("/items/{item_id}")
 def delete_item(
     item_id: int,
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_carcatalog_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     db_item = db.query(models.CarCatalogItem).filter(
         models.CarCatalogItem.id == item_id
     ).first()
@@ -294,11 +383,8 @@ def delete_item(
 def reorder_items(
     items: List[dict],
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_carcatalog_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     for item_data in items:
         db.query(models.CarCatalogItem).filter(
             models.CarCatalogItem.id == item_data['id']
@@ -313,11 +399,8 @@ def reorder_items(
 @router.post("/import")
 def import_from_json(
     db: Session = Depends(get_db),
-    current_user: models.User = Depends(get_current_user)
+    current_user: models.User = Depends(require_carcatalog_edit)
 ):
-    if current_user.role != 'admin':
-        raise HTTPException(status_code=403, detail="Admin rights required")
-    
     # Импортируем данные из вашего файла
     from data.carcatalogData import get_carcatalog_data
     
@@ -328,7 +411,6 @@ def import_from_json(
     db.query(models.CarCatalogTable).delete()
     
     for i, table_data in enumerate(data):
-        # Определяем секцию
         if i < 14:
             section = "passenger"
         elif i < 16:
@@ -336,11 +418,10 @@ def import_from_json(
         else:
             section = "truck"
         
-        # Создаем таблицу
         table = models.CarCatalogTable(
             table_key=table_data['id'],
             car_name_ru=table_data['carName'],
-            car_name_en=table_data['carName'],  # Нужно будет добавить английские названия
+            car_name_en=table_data['carName'],
             section=section,
             display_order=i,
             updated_by=current_user.id
@@ -348,12 +429,11 @@ def import_from_json(
         db.add(table)
         db.flush()
         
-        # Создаем записи
         for j, item_data in enumerate(table_data['data']):
             item = models.CarCatalogItem(
                 table_id=table.id,
                 installation_location_ru=item_data['installationLocation'],
-                installation_location_en=item_data['installationLocation'],  # Нужно будет добавить английские
+                installation_location_en=item_data['installationLocation'],
                 symbol=item_data['symbol'],
                 vpz_designation=item_data['vpzDesignation'],
                 display_order=j
